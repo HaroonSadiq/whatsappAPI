@@ -84,7 +84,7 @@ async function sendWhatsApp(to, body) {
   }
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   // GET — Meta webhook verification
   if (req.method === "GET") {
     const mode      = req.query["hub.mode"];
