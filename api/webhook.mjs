@@ -84,8 +84,7 @@ async function sendWhatsApp(to, body) {
   }
 }
 
-module.exports = async function handler(req, res) {
-  // GET — Meta webhook verification
+export default async function handler(req, res) {
   if (req.method === "GET") {
     const mode      = req.query["hub.mode"];
     const token     = req.query["hub.verify_token"];
@@ -96,7 +95,6 @@ module.exports = async function handler(req, res) {
     return res.sendStatus(403);
   }
 
-  // POST — incoming WhatsApp message
   if (req.method === "POST") {
     res.sendStatus(200);
 
@@ -110,7 +108,6 @@ module.exports = async function handler(req, res) {
     const text  = msg.text.body.trim();
 
     console.log(`📩 ${name} (+${phone}): ${text}`);
-
     const result = await classify(text);
     console.log(`🤖 ${result.type}: ${result.reply}`);
 
