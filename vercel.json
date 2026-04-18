@@ -8,7 +8,7 @@
   ],
   "routes": [
     {
-      "src": "/api/handler",
+      "src": "/(.*)",
       "dest": "/api/handler.cjs"
     }
   ]
