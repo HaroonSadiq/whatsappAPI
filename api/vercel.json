@@ -1,4 +1,10 @@
 {
+  "builds": [
+    {
+      "src": "webhook.mjs",
+      "use": "@vercel/node"
+    }
+  ],
   "routes": [
     {
       "src": "/(.*)",
