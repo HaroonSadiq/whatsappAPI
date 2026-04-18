@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://graph.facebook.com/v19.0/1053456724519879/messages\" -H \"Authorization: Bearer EAAiNrZCbZBCR8BRPg1DZBkvpbfZA9f1Nk7lmwl4FcfZCqsQtUONcu5antCRug0pahEmpHAWKZCscHGZAELAZC8DWpDcJmfRPJVP1Xi00ZBFKsfAb10ildHJbJjhIrXSVxfrAIMVvQA0F6473BAZBjBRb32hFcrmIjcZB9wnZAYZBRryFJ2uDwv4ukDJefJZCpbPk7XEZAb6rDNocZCyy5KGP3YxujIYRui3E6AG7NZBZBMoE9VTmQETrpzv6RRACEfxmSi7Hv3nIvRowqXw3LXhUzw3nrQgbPn\" -H \"Content-Type: application/json\")",
+      "Bash(npm run:*)"
+    ]
+  }
+}

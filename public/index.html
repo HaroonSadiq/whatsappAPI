@@ -1,0 +1,1134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhatsApp Router — Admin Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --green:   #25D366; --green-d: #128C7E; --teal: #075E54;
+      --bg:      #0f1117; --card: #1a1d27; --card2: #22263a;
+      --border:  #2e3248; --text: #e8eaf6; --muted: #7c83a8;
+      --yellow:  #f6c90e; --red: #ff5c5c; --blue: #4f8ef7;
+      --purple:  #ab47bc; --orange: #ff7043; --cyan: #26c6da;
+      --radius:  12px;
+    }
+    body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; font-size:14px; }
+
+    nav { background:var(--teal); padding:0 28px; height:62px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:100; box-shadow:0 2px 12px rgba(0,0,0,.5); }
+    .nav-brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:1.05rem; }
+    .nav-brand svg { width:30px; height:30px; }
+    .nav-right { display:flex; align-items:center; gap:16px; font-size:.8rem; color:rgba(255,255,255,.7); }
+    #clock { font-variant-numeric:tabular-nums; }
+    .pulse { width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.8)} }
+
+    .tabs { display:flex; gap:4px; padding:18px 20px 0; max-width:1400px; margin:0 auto; }
+    .tab { padding:8px 18px; border-radius:8px 8px 0 0; font-size:.82rem; font-weight:600; cursor:pointer; color:var(--muted); background:transparent; border:1px solid transparent; border-bottom:none; transition:all .15s; user-select:none; }
+    .tab.active { background:var(--card); color:var(--text); border-color:var(--border); }
+    .tab:hover:not(.active) { color:var(--text); }
+
+    .wrap { max-width:1400px; margin:0 auto; padding:0 20px 28px; }
+    .page { display:none; padding-top:18px; }
+    .page.active { display:block; }
+
+    /* Error banner */
+    #err-banner { background:rgba(255,92,92,.12); border:1px solid var(--red); border-radius:8px; padding:10px 16px; margin-bottom:16px; color:var(--red); font-size:.83rem; display:none; }
+
+    /* Stats */
+    .stats { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; margin-bottom:20px; }
+    @media(max-width:1100px){ .stats { grid-template-columns:repeat(3,1fr); } }
+    @media(max-width:650px){  .stats { grid-template-columns:repeat(2,1fr); } }
+    .stat { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px 18px; transition:transform .15s; }
+    .stat:hover { transform:translateY(-2px); }
+    .stat-label { font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; margin-bottom:6px; }
+    .stat-value { font-size:1.8rem; font-weight:700; line-height:1; }
+    .stat-sub   { font-size:.72rem; color:var(--muted); margin-top:4px; }
+    .c-green { color:var(--green); } .c-yellow { color:var(--yellow); }
+    .c-red   { color:var(--red); }  .c-blue   { color:var(--blue); }
+    .c-purple{ color:var(--purple);}  .c-orange { color:var(--orange); }
+    .c-cyan  { color:var(--cyan); }  .c-muted  { color:var(--muted); }
+
+    /* Grid */
+    .row2  { display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-bottom:18px; }
+    .row3  { display:grid; grid-template-columns:2fr 1fr 1fr; gap:18px; margin-bottom:18px; }
+    .row32 { display:grid; grid-template-columns:3fr 2fr; gap:18px; margin-bottom:18px; }
+    @media(max-width:900px){ .row2,.row3,.row32 { grid-template-columns:1fr; } }
+
+    /* Panel */
+    .panel { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+    .panel-head { padding:13px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; font-weight:600; font-size:.88rem; }
+    .panel-body { padding:0; }
+
+    /* Badge */
+    .badge { display:inline-block; padding:2px 9px; border-radius:20px; font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+    .bg-green  { background:rgba(37,211,102,.15); color:var(--green); }
+    .bg-red    { background:rgba(255,92,92,.15);  color:var(--red); }
+    .bg-yellow { background:rgba(246,201,14,.12); color:var(--yellow); }
+    .bg-blue   { background:rgba(79,142,247,.15); color:var(--blue); }
+    .bg-orange { background:rgba(255,112,67,.15); color:var(--orange); }
+    .bg-purple { background:rgba(171,71,188,.15); color:var(--purple); }
+    .bg-muted  { background:rgba(124,131,168,.1); color:var(--muted); }
+
+    /* Category cards */
+    .cat-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin-bottom:20px; }
+    .cat-card  { background:var(--card); border-radius:var(--radius); padding:14px 16px; }
+
+    /* Agent grid */
+    .agent-section-lbl { grid-column:1/-1; font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.07em; padding:6px 2px 4px; margin-top:6px; }
+    .agent-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; padding:14px; }
+    .agent-card { background:var(--card2); border:1px solid var(--border); border-radius:10px; padding:12px 14px; display:flex; align-items:flex-start; gap:10px; cursor:pointer; transition:border-color .15s,transform .1s; }
+    .agent-card:hover { border-color:var(--green); transform:translateY(-1px); }
+    .avatar { width:38px; height:38px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:.9rem; flex-shrink:0; background:linear-gradient(135deg,var(--green-d),var(--blue)); }
+    .agent-info { min-width:0; flex:1; }
+    .agent-name { font-weight:600; font-size:.83rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .agent-cat  { font-size:.7rem; color:var(--muted); margin-bottom:6px; }
+    .load-row   { display:flex; justify-content:space-between; font-size:.62rem; color:var(--muted); margin-bottom:3px; }
+    .load-bar   { height:4px; border-radius:2px; background:var(--border); overflow:hidden; }
+    .load-fill  { height:100%; border-radius:2px; transition:width .4s; }
+    .dot { width:9px; height:9px; border-radius:50%; flex-shrink:0; margin-top:5px; }
+    .dot-available { background:var(--green); }
+    .dot-busy      { background:var(--red); }
+    .dot-cooldown  { background:var(--yellow); }
+    .dot-offline   { background:var(--muted); }
+    .dot-failed    { background:var(--orange); }
+
+    /* Table */
+    table { width:100%; border-collapse:collapse; font-size:.84rem; }
+    th { text-align:left; padding:9px 16px; font-size:.68rem; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; background:var(--card2); border-bottom:1px solid var(--border); }
+    td { padding:9px 16px; border-bottom:1px solid var(--border); vertical-align:middle; }
+    tr:last-child td { border-bottom:none; }
+    tr:hover td { background:rgba(255,255,255,.02); }
+
+    /* Pill */
+    .pill { font-size:.7rem; font-weight:600; padding:3px 10px; border-radius:20px; cursor:pointer; transition:opacity .15s; border:1px solid currentColor; white-space:nowrap; }
+    .pill:hover { opacity:.7; }
+    .pill.available { color:var(--green);  background:rgba(37,211,102,.1); }
+    .pill.busy      { color:var(--red);    background:rgba(255,92,92,.1); }
+    .pill.cooldown  { color:var(--yellow); background:rgba(246,201,14,.1); }
+    .pill.offline   { color:var(--muted);  background:rgba(124,131,168,.1); }
+    .pill.failed    { color:var(--orange); background:rgba(255,112,67,.1); }
+
+    /* Queue */
+    .q-item { display:flex; align-items:center; justify-content:space-between; padding:11px 16px; border-bottom:1px solid var(--border); }
+    .q-item:last-child { border-bottom:none; }
+    .q-left { display:flex; align-items:center; gap:10px; }
+    .q-num  { width:26px; height:26px; border-radius:50%; background:var(--card2); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:.73rem; font-weight:700; color:var(--yellow); flex-shrink:0; }
+    .q-name { font-weight:600; font-size:.83rem; }
+    .q-meta { font-size:.7rem; color:var(--muted); margin-top:2px; }
+    .q-wait { font-size:.73rem; color:var(--yellow); white-space:nowrap; }
+
+    /* Ratings */
+    .r-item { display:flex; align-items:center; gap:10px; padding:9px 16px; border-bottom:1px solid var(--border); }
+    .r-item:last-child { border-bottom:none; }
+    .dist-wrap { padding:14px 16px; }
+    .dist-row  { display:flex; align-items:center; gap:10px; margin-bottom:7px; }
+    .dist-row:last-child { margin-bottom:0; }
+    .dist-lbl  { width:26px; font-size:.78rem; color:var(--muted); text-align:right; }
+    .dist-track{ flex:1; height:8px; background:var(--card2); border-radius:4px; overflow:hidden; }
+    .dist-fill { height:100%; border-radius:4px; background:var(--yellow); transition:width .5s ease; }
+    .dist-cnt  { width:26px; font-size:.78rem; color:var(--muted); }
+
+    /* Integrations */
+    .int-list { padding:14px; display:flex; flex-direction:column; gap:10px; }
+    .int-card { background:var(--card2); border:1px solid var(--border); border-radius:10px; padding:11px 13px; display:flex; align-items:center; gap:12px; }
+    .int-icon { width:34px; height:34px; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:1rem; flex-shrink:0; }
+    .int-info { flex:1; min-width:0; }
+    .int-name { font-weight:600; font-size:.83rem; }
+    .int-desc { font-size:.7rem; color:var(--muted); margin-top:2px; }
+    .toggle { width:38px; height:21px; border-radius:11px; background:var(--border); border:none; cursor:pointer; position:relative; transition:background .2s; flex-shrink:0; }
+    .toggle.on { background:var(--green); }
+    .toggle::after { content:''; position:absolute; width:15px; height:15px; border-radius:50%; background:#fff; top:3px; left:3px; transition:transform .2s; }
+    .toggle.on::after { transform:translateX(17px); }
+
+    /* Forms */
+    .action-panel { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:18px; margin-bottom:18px; }
+    .action-title { font-weight:600; font-size:.88rem; margin-bottom:3px; }
+    .action-sub   { font-size:.76rem; color:var(--muted); margin-bottom:13px; }
+    .form-row { display:flex; gap:10px; flex-wrap:wrap; }
+    .form-grp { display:flex; flex-direction:column; gap:4px; flex:1; min-width:130px; }
+    label { font-size:.68rem; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+    input, select, textarea { background:var(--card2); border:1px solid var(--border); border-radius:8px; color:var(--text); padding:7px 11px; font-size:.83rem; outline:none; transition:border-color .15s; font-family:inherit; }
+    input:focus, select:focus, textarea:focus { border-color:var(--green); }
+    input::placeholder, textarea::placeholder { color:var(--muted); }
+    .btn { padding:7px 16px; border-radius:8px; border:none; font-size:.83rem; font-weight:600; cursor:pointer; transition:opacity .15s,transform .1s; align-self:flex-end; white-space:nowrap; }
+    .btn:hover { opacity:.85; }
+    .btn:active { transform:scale(.97); }
+    .btn-primary { background:var(--green); color:#000; }
+    .btn-muted   { background:var(--card2); color:var(--text); border:1px solid var(--border); }
+    .btn-danger  { background:rgba(255,92,92,.15); color:var(--red); border:1px solid var(--red); }
+
+    /* Refresh bar */
+    .refresh-bar { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; font-size:.76rem; color:var(--muted); }
+
+    /* Empty */
+    .empty { padding:28px; text-align:center; color:var(--muted); font-size:.83rem; }
+
+    /* Toasts */
+    #toasts { position:fixed; bottom:22px; right:22px; z-index:999; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
+    .toast { background:var(--card2); border:1px solid var(--border); border-left:4px solid var(--green); padding:10px 15px; border-radius:9px; font-size:.81rem; max-width:300px; animation:fadeIn .2s ease; }
+    .toast.err { border-left-color:var(--red); }
+    @keyframes fadeIn { from{opacity:0;transform:translateX(12px)} to{opacity:1;transform:none} }
+
+    /* Perf bar */
+    .perf-bar { height:6px; border-radius:3px; background:var(--card2); overflow:hidden; min-width:60px; }
+    .perf-fill { height:100%; border-radius:3px; background:var(--green); transition:width .5s; }
+
+    /* Log feed */
+    .log-entry { padding:9px 14px; border-bottom:1px solid var(--border); display:flex; gap:10px; align-items:flex-start; font-size:.8rem; }
+    .log-entry:last-child { border-bottom:none; }
+    .log-icon { width:30px; height:30px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:.85rem; flex-shrink:0; }
+    .log-body { flex:1; min-width:0; }
+    .log-type { font-weight:700; font-size:.72rem; text-transform:uppercase; }
+    .log-detail { font-size:.78rem; color:var(--muted); margin-top:2px; }
+    .log-time { font-size:.7rem; color:var(--muted); white-space:nowrap; }
+
+    .scroll-panel { max-height:420px; overflow-y:auto; }
+    .section-lbl { font-size:.68rem; color:var(--yellow); text-transform:uppercase; letter-spacing:.06em; font-weight:700; padding:7px 16px 4px; }
+
+    /* Skills */
+    .skill-tag { display:inline-block; padding:1px 7px; border-radius:10px; font-size:.63rem; margin:1px; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-brand">
+    <svg viewBox="0 0 32 32" fill="none">
+      <circle cx="16" cy="16" r="16" fill="#25D366"/>
+      <path d="M23.5 8.5C21.7 6.7 19.3 5.6 16.7 5.5 11.4 5.3 6.9 9.5 6.8 14.8c0 1.6.4 3.2 1.2 4.6L6.7 25.4l6.2-1.6c1.4.7 2.9 1.1 4.5 1.1h.1c5.3 0 9.8-4.2 9.9-9.5 0-2.6-1-5-2.9-6.9z" fill="#fff"/>
+      <path d="M16.7 23.7h-.1c-1.4 0-2.8-.4-4-1.1l-.3-.2-2.9.8.8-2.8-.2-.3a7.9 7.9 0 01-1.2-4.3c.1-4.2 3.7-7.6 8-7.6 2.1 0 4.1.8 5.6 2.3a7.8 7.8 0 012.3 5.5c-.1 4.3-3.7 7.7-8 7.7z" fill="#25D366"/>
+      <path d="M20.6 17.2c-.2-.1-1.4-.7-1.6-.8-.2-.1-.4-.1-.5.1-.2.2-.6.8-.8 1-.1.1-.3.2-.5.1-.2-.1-1-.4-1.8-1.1a7 7 0 01-1.6c-.1-.2 0-.4.1-.5l.4-.5c.1-.1.1-.3.2-.4 0-.1 0-.3-.1-.4-.1-.1-.5-1.3-.7-1.7-.2-.5-.4-.4-.5-.4h-.5c-.2 0-.5.1-.7.3-.2.3-.9.8-.9 2 0 1.2.9 2.3 1 2.5.1.2 1.7 2.6 4.1 3.6.6.3 1 .4 1.4.5.6.2 1.1.2 1.5.1.5-.1 1.4-.6 1.6-1.1.2-.5.2-1 .1-1.1-.1-.1-.3-.2-.5-.3z" fill="#fff"/>
+    </svg>
+    WhatsApp Router — Admin
+  </div>
+  <div class="nav-right">
+    <div class="pulse"></div>
+    <span id="last-updated" style="color:rgba(255,255,255,.7)">Connecting…</span>
+    <span id="clock"></span>
+    <span id="admin-name" style="color:rgba(255,255,255,.85);font-weight:600"></span>
+    <button onclick="logout()" style="background:rgba(255,255,255,.12);border:none;color:#fff;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:.78rem">Logout</button>
+  </div>
+</nav>
+
+<div class="tabs">
+  <div class="tab active" data-tab="overview">Overview</div>
+  <div class="tab" data-tab="agents">Agents</div>
+  <div class="tab" data-tab="manage">Manage Users</div>
+  <div class="tab" data-tab="conversations">Conversations</div>
+  <div class="tab" data-tab="logs">Event Logs</div>
+  <div class="tab" data-tab="settings">Settings</div>
+</div>
+
+<div class="wrap">
+<div id="err-banner"></div>
+
+<!-- ══════════════════════════════════════ OVERVIEW ══ -->
+<div class="page active" id="page-overview">
+
+  <div class="refresh-bar">
+    <span>Auto-refresh every 4 s</span>
+    <button class="btn btn-muted" onclick="loadAll()">↻ Refresh</button>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat"><div class="stat-label">Available</div><div class="stat-value c-green" id="s-avail">—</div><div class="stat-sub">Ready</div></div>
+    <div class="stat"><div class="stat-label">Busy</div><div class="stat-value c-red" id="s-busy">—</div><div class="stat-sub">In chat</div></div>
+    <div class="stat"><div class="stat-label">Cooldown</div><div class="stat-value c-yellow" id="s-cooldown">—</div><div class="stat-sub">Post-chat break</div></div>
+    <div class="stat"><div class="stat-label">Queue</div><div class="stat-value c-orange" id="s-queue">—</div><div class="stat-sub">Waiting</div></div>
+    <div class="stat"><div class="stat-label">Avg Rating</div><div class="stat-value c-blue" id="s-rating">—</div><div class="stat-sub" id="s-rating-sub">No reviews</div></div>
+    <div class="stat"><div class="stat-label">Avg Response</div><div class="stat-value c-cyan" id="s-resptime">—</div><div class="stat-sub">Per chat</div></div>
+  </div>
+
+  <!-- Category cards -->
+  <div class="cat-cards" id="cat-cards"></div>
+
+  <!-- Agent roster + Queue -->
+  <div class="row2">
+    <div class="panel">
+      <div class="panel-head">Live Agent Roster <span class="badge bg-muted" id="b-agents">0</span></div>
+      <div class="agent-grid" id="agent-grid"><div class="empty">Loading…</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">Active &amp; Queued <span class="badge bg-yellow" id="b-queue">0</span></div>
+      <div id="active-body"></div>
+      <div id="queue-body"><div class="empty">No customers waiting 🎉</div></div>
+    </div>
+  </div>
+
+  <!-- Message feed + Send -->
+  <div class="row2">
+    <div class="panel">
+      <div class="panel-head">Live Message Feed <span class="badge bg-blue" id="b-msgs">0</span></div>
+      <div id="msg-feed" class="scroll-panel"><div class="empty">No messages yet</div></div>
+    </div>
+    <div class="panel" style="display:flex;flex-direction:column">
+      <div class="panel-head">Send Message</div>
+      <div style="padding:16px;display:flex;flex-direction:column;gap:11px;flex:1">
+        <div class="form-grp"><label>Customer Phone</label><input id="send-phone" type="text" placeholder="923001234567 (no +)" /></div>
+        <div class="form-grp" style="flex:1"><label>Message</label><textarea id="send-msg" rows="5" style="resize:vertical" placeholder="Type your message…"></textarea></div>
+        <button class="btn btn-primary" style="align-self:flex-end" onclick="sendManual()">Send ✈</button>
+        <div id="send-status" style="font-size:.76rem;color:var(--muted);min-height:16px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mark Done -->
+  <div class="action-panel">
+    <div class="action-title">Mark Conversation Done</div>
+    <div class="action-sub">Resolve a chat — customer gets a rating request, agent enters cooldown.</div>
+    <div class="form-row">
+      <div class="form-grp"><label>Agent</label><select id="done-agent"><option value="">Select agent…</option></select></div>
+      <div class="form-grp"><label>Customer Phone</label><input id="done-phone" type="text" placeholder="923001234567" /></div>
+      <button class="btn btn-primary" onclick="markDone()">Mark Done ✓</button>
+    </div>
+  </div>
+
+</div><!-- /overview -->
+
+<!-- ══════════════════════════════════════ AGENTS ══ -->
+<div class="page" id="page-agents">
+  <div class="row2" style="margin-top:18px">
+    <div class="panel">
+      <div class="panel-head">Agent Roster <span class="badge bg-muted" id="b-agents2">0</span></div>
+      <div class="panel-body" style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr><th>Category</th><th>Name</th><th>ID</th><th>Status</th><th>Load</th><th>Skills</th><th>Chats</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="agent-table"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">Status Legend</div>
+      <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:center;gap:10px"><div class="dot dot-available"></div><div><strong>Available</strong><div style="font-size:.75rem;color:var(--muted)">Ready — has free capacity</div></div></div>
+        <div style="display:flex;align-items:center;gap:10px"><div class="dot dot-busy"></div><div><strong>Busy</strong><div style="font-size:.75rem;color:var(--muted)">At max concurrent capacity</div></div></div>
+        <div style="display:flex;align-items:center;gap:10px"><div class="dot dot-cooldown"></div><div><strong>Cooldown</strong><div style="font-size:.75rem;color:var(--muted)">All chats done, 2-min break, auto-resets</div></div></div>
+        <div style="display:flex;align-items:center;gap:10px"><div class="dot dot-offline"></div><div><strong>Offline</strong><div style="font-size:.75rem;color:var(--muted)">Manually taken offline</div></div></div>
+        <div style="display:flex;align-items:center;gap:10px"><div class="dot dot-failed"></div><div><strong>Failed</strong><div style="font-size:.75rem;color:var(--muted)">Alert delivery failed repeatedly</div></div></div>
+        <div style="margin-top:8px;padding-top:12px;border-top:1px solid var(--border);font-size:.76rem;color:var(--muted)">
+          Use action buttons to toggle status. Offline/Failed require manual reset to Available.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ CONVERSATIONS ══ -->
+<div class="page" id="page-conversations">
+  <div style="margin-top:18px" class="row32">
+    <div>
+      <div class="panel" style="margin-bottom:18px">
+        <div class="panel-head">Agent Performance</div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr><th>Agent</th><th>Category</th><th>Status</th><th>Load</th><th>Chats</th><th>Avg Response</th></tr></thead>
+            <tbody id="perf-table"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">Active Conversations <span class="badge bg-green" id="b-active">0</span></div>
+        <div id="active-chats-detail"><div class="empty">No active chats</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="panel" style="margin-bottom:18px">
+        <div class="panel-head">Queue <span class="badge bg-yellow" id="b-queue2">0</span></div>
+        <div id="queue-detail"><div class="empty">Queue empty 🎉</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">Ratings</div>
+        <div id="ratings-body"><div class="empty">No ratings yet</div></div>
+        <div class="dist-wrap" id="dist-wrap" style="display:none">
+          <div style="font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px">Distribution</div>
+          <div id="dist"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ LOGS ══ -->
+<div class="page" id="page-logs">
+  <div style="margin-top:18px" class="row2">
+    <div class="panel">
+      <div class="panel-head">
+        Event Log — Live
+        <div style="display:flex;gap:8px;align-items:center">
+          <select id="log-filter" onchange="renderLogs()" style="padding:4px 8px;font-size:.75rem">
+            <option value="">All events</option>
+            <option value="message_in">Messages In</option>
+            <option value="classified">Classified</option>
+            <option value="assigned">Assignments</option>
+            <option value="queued">Queued</option>
+            <option value="done">Done</option>
+            <option value="rating">Ratings</option>
+            <option value="error">Errors</option>
+          </select>
+          <button class="btn btn-muted" style="padding:4px 10px;font-size:.75rem" onclick="fetchLogs()">↻</button>
+        </div>
+      </div>
+      <div id="log-feed" class="scroll-panel" style="max-height:600px"><div class="empty">No events yet</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">Log Stats</div>
+      <div id="log-stats" style="padding:16px;display:flex;flex-direction:column;gap:10px"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════ SETTINGS ══ -->
+<div class="page" id="page-settings">
+  <div style="margin-top:18px" class="row2">
+    <div class="panel">
+      <div class="panel-head">Integrations</div>
+      <div class="int-list">
+        <div class="int-card">
+          <div class="int-icon" style="background:#4A154B">💬</div>
+          <div class="int-info"><div class="int-name">Slack</div><div class="int-desc">Alert team on escalations</div></div>
+          <button class="toggle" id="t-slack" onclick="toggleInt('slack',this)"></button>
+        </div>
+        <div class="int-card">
+          <div class="int-icon" style="background:#0f9d58">📊</div>
+          <div class="int-info"><div class="int-name">Google Sheets</div><div class="int-desc">Log all conversations</div></div>
+          <button class="toggle" id="t-sheets" onclick="toggleInt('sheets',this)"></button>
+        </div>
+        <div class="int-card">
+          <div class="int-icon" style="background:#ff7043">🔗</div>
+          <div class="int-info"><div class="int-name">Outbound Webhook</div><div class="int-desc">POST events to CRM</div></div>
+          <button class="toggle" id="t-webhook" onclick="toggleInt('webhook',this)"></button>
+        </div>
+        <div class="int-card">
+          <div class="int-icon" style="background:#1565c0">📧</div>
+          <div class="int-info"><div class="int-name">Email Alerts</div><div class="int-desc">Alert on frustrated customers</div></div>
+          <button class="toggle" id="t-email" onclick="toggleInt('email',this)"></button>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">Queue System Stats</div>
+      <div id="queue-stats" style="padding:16px;display:flex;flex-direction:column;gap:10px"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════ MANAGE USERS ══ -->
+<div class="page" id="page-manage">
+  <div class="row2" style="margin-bottom:18px">
+
+    <!-- Add agent / user form -->
+    <div class="panel">
+      <div class="panel-head">Add New Agent</div>
+      <div style="padding:18px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Display Name *</div>
+            <input id="nu-name" type="text" placeholder="Hamza Tariq" style="width:100%;background:#111318;border:1px solid var(--border);border-radius:7px;padding:8px 11px;color:var(--text);font-size:.84rem;outline:none">
+          </div>
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Username *</div>
+            <input id="nu-username" type="text" placeholder="hamza" style="width:100%;background:#111318;border:1px solid var(--border);border-radius:7px;padding:8px 11px;color:var(--text);font-size:.84rem;outline:none">
+          </div>
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Password *</div>
+            <input id="nu-pass" type="password" placeholder="••••••••" style="width:100%;background:#111318;border:1px solid var(--border);border-radius:7px;padding:8px 11px;color:var(--text);font-size:.84rem;outline:none">
+          </div>
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Category *</div>
+            <select id="nu-cat" style="width:100%;background:#111318;border:1px solid var(--border);border-radius:7px;padding:8px 11px;color:var(--text);font-size:.84rem;outline:none">
+              <option value="clothing">Clothing</option>
+              <option value="tech">Tech</option>
+              <option value="general">General</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Max Conversations</div>
+            <input id="nu-maxc" type="number" value="3" min="1" max="10" style="width:100%;background:#111318;border:1px solid var(--border);border-radius:7px;padding:8px 11px;color:var(--text);font-size:.84rem;outline:none">
+          </div>
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Phone (optional)</div>
+            <input id="nu-phone" type="text" placeholder="923001234567" style="width:100%;background:#111318;border:1px solid var(--border);border-radius:7px;padding:8px 11px;color:var(--text);font-size:.84rem;outline:none">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="addAgent()" style="align-self:flex-start;padding:8px 20px">+ Add Agent</button>
+        <div id="nu-status" style="font-size:.78rem;color:var(--muted)"></div>
+      </div>
+    </div>
+
+    <!-- Add admin form -->
+    <div class="panel">
+      <div class="panel-head">Add Admin User</div>
+      <div style="padding:18px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Username *</div>
+            <input id="na-username" type="text" placeholder="admin2" style="width:100%;background:#111318;border:1px solid var(--border);border-radius:7px;padding:8px 11px;color:var(--text);font-size:.84rem;outline:none">
+          </div>
+          <div>
+            <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase">Password *</div>
+            <input id="na-pass" type="password" placeholder="••••••••" style="width:100%;background:#111318;border:1px solid var(--border);border-radius:7px;padding:8px 11px;color:var(--text);font-size:.84rem;outline:none">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="addAdmin()" style="align-self:flex-start;padding:8px 20px">+ Add Admin</button>
+        <div id="na-status" style="font-size:.78rem;color:var(--muted)"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Users table -->
+  <div class="panel">
+    <div class="panel-head">All Users <button class="btn btn-muted" onclick="loadUsers()" style="margin-left:auto;padding:3px 10px;font-size:.72rem">↻ Refresh</button></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Username</th><th>Role</th><th>Agent ID</th><th>Status</th><th>Created</th><th>Actions</th>
+        </tr></thead>
+        <tbody id="users-table"><tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+</div><!-- /wrap -->
+<div id="toasts"></div>
+
+<script>
+'use strict';
+
+// ── Auth guard ─────────────────────────────────────────────────────────────────
+const _token = localStorage.getItem('wa_token');
+const _me    = JSON.parse(localStorage.getItem('wa_user') || 'null');
+if (!_token || !_me || _me.role !== 'admin') {
+  window.location.href = '/login';
+}
+document.getElementById('admin-name').textContent = _me?.username || '';
+
+function logout() {
+  localStorage.removeItem('wa_token');
+  localStorage.removeItem('wa_user');
+  window.location.href = '/login';
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+const CAT_COLOR = { clothing:'#ab47bc', tech:'#4f8ef7', general:'#7c83a8' };
+const STATUS_COLOR = { available:'var(--green)', busy:'var(--red)', cooldown:'var(--yellow)', offline:'var(--muted)', failed:'var(--orange)' };
+const LOG_COLOR = { message_in:'#25D366',message_out:'#4f8ef7',classified:'#ab47bc',assigned:'#25D366',queued:'#f6c90e',dequeued:'#26c6da',done:'#25D366',rating:'#f6c90e',error:'#ff5c5c',send_retry:'#ff7043',send_failed:'#ff5c5c',agent_failed:'#ff5c5c',agent_reset:'#25D366',fallback_ai:'#26c6da',queue_job_start:'#7c83a8',queue_job_end:'#7c83a8',agent_conversation_assigned:'#25D366',agent_conversation_released:'#26c6da',agent_chat_complete:'#25D366' };
+const LOG_ICON  = { message_in:'📩',message_out:'📤',classified:'🤖',assigned:'🔀',queued:'⏳',dequeued:'✅',done:'✅',rating:'⭐',error:'❌',send_retry:'🔄',send_failed:'❌',agent_failed:'🔴',agent_reset:'🟢',fallback_ai:'🤖',queue_job_start:'▶',queue_job_end:'⏹',agent_conversation_assigned:'➕',agent_conversation_released:'➖',agent_chat_complete:'🏁' };
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let _logs = [];
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function el(id)    { return document.getElementById(id); }
+function esc(str)  { return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function initials(n){ return n.split(' ').slice(0,2).map(w=>w[0]||'').join('').toUpperCase()||'?'; }
+function fmtMs(ms) { if(!ms) return '—'; if(ms<1000) return ms+'ms'; if(ms<60000) return (ms/1000).toFixed(1)+'s'; return (ms/60000).toFixed(1)+'m'; }
+function timeAgo(ms){ const s=Math.floor((Date.now()-ms)/1000); if(s<60) return s+'s ago'; if(s<3600) return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago'; }
+function stars(n)  { return '★'.repeat(n)+'☆'.repeat(5-n); }
+function catColor(c){ return CAT_COLOR[c]||'#7c83a8'; }
+function loadColor(pct){ return pct>=100?'var(--red)':pct>=60?'var(--yellow)':'var(--green)'; }
+
+function toast(msg, isErr=false) {
+  const t = document.createElement('div');
+  t.className = 'toast'+(isErr?' err':'');
+  t.textContent = msg;
+  el('toasts').appendChild(t);
+  setTimeout(()=>t.remove(), 3500);
+}
+
+function showErr(msg) {
+  const b = el('err-banner');
+  b.textContent = '⚠ ' + msg;
+  b.style.display = 'block';
+  setTimeout(()=>{ b.style.display='none'; }, 6000);
+}
+
+// ── Tabs ───────────────────────────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    t.classList.add('active');
+    el('page-'+t.dataset.tab).classList.add('active');
+    if (t.dataset.tab === 'logs')   fetchLogs();
+    if (t.dataset.tab === 'manage') loadUsers();
+  });
+});
+
+// ── Clock ──────────────────────────────────────────────────────────────────────
+setInterval(() => {
+  el('clock').textContent = new Date().toLocaleTimeString('en-PK',{hour12:false});
+}, 1000);
+
+// ── API helpers ────────────────────────────────────────────────────────────────
+function authHeader() { return { 'Authorization': 'Bearer ' + _token }; }
+
+async function apiFetch(url) {
+  const r = await fetch(url, { headers: authHeader() });
+  if (r.status === 401) { logout(); throw new Error('Session expired'); }
+  if (!r.ok) throw new Error(`${url} → HTTP ${r.status}`);
+  return r.json();
+}
+
+async function apiPost(url, body) {
+  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json',...authHeader()}, body:JSON.stringify(body) });
+  const data = await r.json().catch(()=>({}));
+  if (r.status === 401) { logout(); throw new Error('Session expired'); }
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+async function apiDelete(url) {
+  const r = await fetch(url, { method:'DELETE', headers: authHeader() });
+  const data = await r.json().catch(()=>({}));
+  if (r.status === 401) { logout(); throw new Error('Session expired'); }
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+async function apiPatch(url, body) {
+  const r = await fetch(url, { method:'PATCH', headers:{'Content-Type':'application/json',...authHeader()}, body:JSON.stringify(body) });
+  const data = await r.json().catch(()=>({}));
+  if (r.status === 401) { logout(); throw new Error('Session expired'); }
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+// ── Agent status controls ──────────────────────────────────────────────────────
+async function setStatus(agentId, status) {
+  try {
+    const data = await apiPost('/api/set-agent-status', { agentId, status });
+    if (data.autoAssigned) toast(`${agentId} → ${status} · auto-assigned +${data.autoAssigned} ✓`);
+    else toast(`${agentId} → ${status}`);
+    loadAll();
+  } catch(e) { toast(e.message, true); }
+}
+
+function toggleAgent(agentId, current) {
+  setStatus(agentId, current === 'available' ? 'offline' : 'available');
+}
+
+// ── Mark done ──────────────────────────────────────────────────────────────────
+async function markDone() {
+  const agentId = el('done-agent').value;
+  const phone   = el('done-phone').value.trim();
+  if (!agentId || !phone) { toast('Fill in both fields', true); return; }
+  try {
+    await apiPost('/agent-done', { agentId, customerPhone: phone });
+    toast('Chat closed — rating request sent ✓');
+    el('done-phone').value = '';
+    loadAll();
+  } catch(e) { toast(e.message, true); }
+}
+
+// ── Assign queued ──────────────────────────────────────────────────────────────
+async function assignCustomer(phone) {
+  try {
+    await apiPost('/api/assign', { customerPhone: phone });
+    toast(`+${phone} assigned ✓`);
+    loadAll();
+  } catch(e) { toast(e.message, true); }
+}
+
+// ── Send manual message ────────────────────────────────────────────────────────
+async function sendManual() {
+  const phone = el('send-phone').value.trim();
+  const msg   = el('send-msg').value.trim();
+  const statusEl = el('send-status');
+  if (!phone || !msg) { toast('Fill in phone and message', true); return; }
+  statusEl.textContent = 'Sending…';
+  try {
+    await apiPost('/api/send', { phone, message: msg });
+    toast('Message sent ✓');
+    el('send-msg').value = '';
+    statusEl.style.color = 'var(--green)';
+    statusEl.textContent = '✓ Sent at ' + new Date().toLocaleTimeString();
+    loadMessages();
+  } catch(e) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = '✗ ' + e.message;
+    toast(e.message, true);
+  }
+}
+
+// ── Integration toggle ─────────────────────────────────────────────────────────
+async function toggleInt(name, btn) {
+  btn.classList.toggle('on');
+  const enabled = btn.classList.contains('on');
+  try {
+    await apiPost('/integrations/toggle', { name, enabled });
+    toast(`${name} ${enabled?'enabled':'disabled'}`);
+  } catch(e) { toast(e.message, true); btn.classList.toggle('on'); }
+}
+
+// ── RENDER FUNCTIONS ───────────────────────────────────────────────────────────
+
+function renderCatCards(categories) {
+  if (!categories || !categories.length) { el('cat-cards').innerHTML = ''; return; }
+  el('cat-cards').innerHTML = categories.map(cat => {
+    const c = catColor(cat.id);
+    const skillTags = (cat.skills||[]).map(s =>
+      `<span class="skill-tag" style="background:${c}18;color:${c}">${s.replace(/_/g,' ')}</span>`
+    ).join('');
+    return `<div class="cat-card" style="border:1px solid ${c}44">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-weight:700;color:${c};font-size:.9rem">${esc(cat.name)}</span>
+        <span style="font-size:.72rem;color:var(--muted)">${cat.agentCount} agent${cat.agentCount!==1?'s':''}</span>
+      </div>
+      <div style="font-size:.7rem;color:var(--muted);margin-bottom:8px">${esc(cat.description)}</div>
+      <div style="display:flex;justify-content:space-between;font-size:.75rem;margin-bottom:8px">
+        <span style="color:var(--green)">● ${cat.availableCount} available</span>
+        <span style="color:var(--muted)">${cat.agentCount - cat.availableCount} busy/off</span>
+      </div>
+      <div>${skillTags}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderAgentGrid(agents) {
+  const grid = el('agent-grid');
+  if (!agents || !Object.keys(agents).length) { grid.innerHTML = '<div class="empty">No agents</div>'; return; }
+
+  grid.innerHTML = '';
+  for (const [cat, agts] of Object.entries(agents)) {
+    const c = catColor(cat);
+    // Section label
+    const lbl = document.createElement('div');
+    lbl.className = 'agent-section-lbl';
+    lbl.style.cssText = `color:${c};border-bottom:1px solid ${c}44`;
+    lbl.textContent = cat.toUpperCase();
+    grid.appendChild(lbl);
+
+    for (const a of agts) {
+      const pct = a.maxConcurrentConversations > 0
+        ? Math.round((a.activeConversations / a.maxConcurrentConversations) * 100)
+        : 0;
+      const lc = loadColor(pct);
+      const card = document.createElement('div');
+      card.className = 'agent-card';
+      card.title = `${a.name} (${a.id})\nStatus: ${a.status}\nLoad: ${a.activeConversations}/${a.maxConcurrentConversations}\nSkills: ${(a.skills||[]).join(', ')}\n\nClick to toggle Available ↔ Offline`;
+      card.onclick = () => toggleAgent(a.id, a.status);
+      card.innerHTML = `
+        <div class="avatar">${initials(a.name)}</div>
+        <div class="agent-info">
+          <div class="agent-name">${esc(a.name)}</div>
+          <div class="agent-cat">${esc(cat)} · ${esc(a.id)}</div>
+          <div class="load-row"><span>Load</span><span style="color:${lc}">${a.activeConversations}/${a.maxConcurrentConversations}</span></div>
+          <div class="load-bar"><div class="load-fill" style="width:${pct}%;background:${lc}"></div></div>
+        </div>
+        <div class="dot dot-${a.status}"></div>`;
+      grid.appendChild(card);
+    }
+  }
+}
+
+function renderAgentTable(agents, metrics) {
+  const tbody = el('agent-table');
+  const sel   = el('done-agent');
+  const prevSel = sel.value;
+  tbody.innerHTML = '';
+  sel.innerHTML   = '<option value="">Select agent…</option>';
+
+  let total = 0;
+  for (const [cat, agts] of Object.entries(agents)) {
+    const c = catColor(cat);
+    for (const a of agts) {
+      total++;
+      const m   = (metrics||[]).find(x => x.id === a.id) || {};
+      const pct = a.maxConcurrentConversations > 0
+        ? Math.round(((a.activeConversations||0) / a.maxConcurrentConversations) * 100) : 0;
+      const lc  = loadColor(pct);
+      const skillTags = (a.skills||[]).map(s =>
+        `<span class="skill-tag" style="background:${c}18;color:${c}">${s.replace(/_/g,' ')}</span>`
+      ).join('');
+      tbody.innerHTML += `<tr>
+        <td><span style="background:${c}22;color:${c};padding:2px 9px;border-radius:20px;font-size:.7rem;font-weight:600">${esc(cat)}</span></td>
+        <td style="font-weight:600">${esc(a.name)}</td>
+        <td style="color:var(--muted);font-size:.76rem">${esc(a.id)}</td>
+        <td><span class="pill ${a.status}" onclick="toggleAgent('${a.id}','${a.status}')">${a.status}</span></td>
+        <td>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div class="perf-bar" style="width:60px"><div class="perf-fill" style="width:${pct}%;background:${lc}"></div></div>
+            <span style="font-size:.75rem;color:${lc}">${a.activeConversations||0}/${a.maxConcurrentConversations||1}</span>
+          </div>
+        </td>
+        <td style="max-width:200px">${skillTags}</td>
+        <td style="color:var(--muted)">${a.chatCount||0}</td>
+        <td>
+          <div style="display:flex;gap:5px;flex-wrap:wrap">
+            ${a.status!=='available'?`<button class="btn btn-primary" style="padding:3px 8px;font-size:.7rem" onclick="setStatus('${a.id}','available')">Available</button>`:''}
+            ${a.status!=='offline'?`<button class="btn btn-muted" style="padding:3px 8px;font-size:.7rem" onclick="setStatus('${a.id}','offline')">Offline</button>`:''}
+          </div>
+        </td>
+      </tr>`;
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = `${a.name} (${a.id})`;
+      sel.appendChild(opt);
+    }
+  }
+  if (prevSel) sel.value = prevSel;
+  el('b-agents').textContent  = total;
+  el('b-agents2').textContent = total;
+}
+
+function renderActiveAndQueue(activeChats, queue) {
+  // Active chats panel (overview)
+  const aBody = el('active-body');
+  if (activeChats.length) {
+    aBody.innerHTML = `<div class="section-lbl">● Active Chats (${activeChats.length})</div>` +
+      activeChats.map(a => `<div class="q-item">
+        <div class="q-left">
+          <div class="q-num" style="color:var(--green);border-color:var(--green)">▶</div>
+          <div><div class="q-name">+${esc(a.phone)}</div><div class="q-meta">with <strong>${esc(a.agentName)}</strong></div></div>
+        </div>
+        <div class="q-wait" style="color:var(--green)">${timeAgo(a.assignedAt)}</div>
+      </div>`).join('');
+  } else { aBody.innerHTML = ''; }
+
+  // Queue panel (overview)
+  const qBody = el('queue-body');
+  el('b-queue').textContent = activeChats.length + queue.length;
+  if (!queue.length) {
+    qBody.innerHTML = activeChats.length ? '' : '<div class="empty">No customers waiting 🎉</div>';
+  } else {
+    qBody.innerHTML = `<div class="section-lbl">⏳ Waiting (${queue.length})</div>` +
+      queue.map((q,i) => {
+        const c = catColor(q.category);
+        return `<div class="q-item">
+          <div class="q-left">
+            <div class="q-num">${i+1}</div>
+            <div>
+              <div class="q-name">${esc(q.name)}</div>
+              <div class="q-meta">+${esc(q.phone)} · <span style="color:${c}">${esc(q.category)}</span>${q.priority>0?' · <span style="color:var(--orange)">Priority</span>':''}</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div class="q-wait">${timeAgo(q.enqueuedAt)}</div>
+            <button class="btn btn-primary" style="padding:3px 9px;font-size:.7rem" onclick="assignCustomer('${q.phone}')">Assign</button>
+          </div>
+        </div>`;
+      }).join('');
+  }
+}
+
+function renderPerfTable(metrics) {
+  const tbody = el('perf-table');
+  if (!metrics || !metrics.length) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No data</td></tr>'; return; }
+  const maxChats = Math.max(...metrics.map(m=>m.chatCount), 1);
+  tbody.innerHTML = metrics.map(m => {
+    const c   = catColor(m.category);
+    const pct = ((m.chatCount/maxChats)*100).toFixed(1);
+    const lc  = loadColor(m.loadPct||0);
+    return `<tr>
+      <td style="font-weight:600">${esc(m.name)}</td>
+      <td><span style="background:${c}22;color:${c};padding:2px 9px;border-radius:20px;font-size:.7rem;font-weight:600">${esc(m.category)}</span></td>
+      <td><span class="pill ${m.status}">${m.status}</span></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:6px">
+          <div class="load-bar" style="width:50px"><div class="load-fill" style="width:${m.loadPct||0}%;background:${lc}"></div></div>
+          <span style="font-size:.75rem;color:${lc}">${esc(m.currentLoad||'0/1')}</span>
+        </div>
+      </td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div class="perf-bar" style="width:70px"><div class="perf-fill" style="width:${pct}%"></div></div>
+          <span style="font-size:.8rem;color:var(--muted)">${m.chatCount}</span>
+        </div>
+      </td>
+      <td style="color:var(--cyan)">${fmtMs(m.avgResponseMs)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderActiveChatsDetail(activeChats) {
+  el('b-active').textContent = activeChats.length;
+  const body = el('active-chats-detail');
+  if (!activeChats.length) { body.innerHTML = '<div class="empty">No active chats</div>'; return; }
+  body.innerHTML = `<table><thead><tr><th>Customer</th><th>Agent</th><th>Duration</th></tr></thead><tbody>` +
+    activeChats.map(a => `<tr>
+      <td>+${esc(a.phone)}</td>
+      <td>${esc(a.agentName)} <span style="color:var(--muted);font-size:.75rem">(${esc(a.agentId)})</span></td>
+      <td style="color:var(--cyan)">${timeAgo(a.assignedAt)}</td>
+    </tr>`).join('') + `</tbody></table>`;
+}
+
+function renderQueueDetail(queue) {
+  el('b-queue2').textContent = queue.length;
+  const body = el('queue-detail');
+  if (!queue.length) { body.innerHTML = '<div class="empty">Queue empty 🎉</div>'; return; }
+  body.innerHTML = queue.map((q,i) => {
+    const c = catColor(q.category);
+    return `<div class="q-item">
+      <div class="q-left">
+        <div class="q-num">${i+1}</div>
+        <div>
+          <div class="q-name">${esc(q.name)} ${q.priority>0?'<span style="color:var(--orange);font-size:.7rem">▲ Priority</span>':''}</div>
+          <div class="q-meta">+${esc(q.phone)} · <span style="color:${c}">${esc(q.category)}</span> · ${timeAgo(q.enqueuedAt)}</div>
+        </div>
+      </div>
+      <button class="btn btn-primary" style="padding:3px 9px;font-size:.7rem" onclick="assignCustomer('${q.phone}')">Assign</button>
+    </div>`;
+  }).join('');
+}
+
+function renderRatings(ratings, allRatings) {
+  const body = el('ratings-body');
+  const distWrap = el('dist-wrap');
+  if (!ratings.length) { body.innerHTML = '<div class="empty">No ratings yet</div>'; distWrap.style.display='none'; return; }
+  body.innerHTML = ratings.slice(0,6).map(r => `
+    <div class="r-item">
+      <div style="color:var(--yellow);font-size:.88rem">${stars(r.score)}</div>
+      <div style="flex:1;font-weight:600;font-size:.83rem">${esc(r.name)}</div>
+      <div style="font-size:.7rem;color:var(--muted)">${new Date(r.createdAt).toLocaleTimeString()}</div>
+      <div style="font-size:1.05rem;font-weight:700;color:var(--yellow)">${r.score}/5</div>
+    </div>`).join('');
+
+  const src = allRatings||ratings;
+  const dist = [5,4,3,2,1].map(s=>({s, n:src.filter(r=>r.score===s).length}));
+  const max  = Math.max(...dist.map(d=>d.n), 1);
+  distWrap.style.display = '';
+  el('dist').innerHTML = dist.map(d => `
+    <div class="dist-row">
+      <div class="dist-lbl">${d.s}★</div>
+      <div class="dist-track"><div class="dist-fill" style="width:${(d.n/max*100).toFixed(1)}%"></div></div>
+      <div class="dist-cnt">${d.n}</div>
+    </div>`).join('');
+}
+
+function renderQueueStats(qs) {
+  if (!qs) return;
+  el('queue-stats').innerHTML = [
+    ['Active Customer Chains', qs.activeCustomers],
+    ['Total Jobs Enqueued',    qs.totalEnqueued],
+    ['Total Completed',        qs.totalCompleted],
+    ['Total Errors',           qs.totalErrors],
+  ].map(([k,v]) => `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+    <span style="color:var(--muted);font-size:.8rem">${k}</span>
+    <span style="font-weight:600">${v}</span>
+  </div>`).join('');
+}
+
+// ── MAIN DATA LOAD ─────────────────────────────────────────────────────────────
+async function loadAll() {
+  try {
+    const [dash, metrics] = await Promise.all([
+      apiFetch('/api/dashboard'),
+      apiFetch('/api/metrics'),
+    ]);
+
+    el('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-PK',{hour12:false});
+    el('last-updated').style.color = 'rgba(255,255,255,.7)';
+
+    const { stats, agents, categories, queue, ratings, activeChats, queueStats, integrations } = dash;
+
+    // Stats row
+    el('s-avail').textContent    = stats.availableAgents ?? '—';
+    el('s-busy').textContent     = stats.busyAgents      ?? '—';
+    el('s-cooldown').textContent = stats.cooldownAgents  ?? '—';
+    el('s-queue').textContent    = stats.queueLength     ?? '—';
+    el('s-rating').textContent   = stats.avgRating ? stats.avgRating + ' ⭐' : '—';
+    el('s-rating-sub').textContent = stats.totalRatings ? `${stats.totalRatings} review${stats.totalRatings>1?'s':''}` : 'No reviews';
+    const withTime = metrics.filter(m => m.avgResponseMs);
+    const avgRT = withTime.length ? Math.round(withTime.reduce((a,m)=>a+m.avgResponseMs,0)/withTime.length) : null;
+    el('s-resptime').textContent = fmtMs(avgRT);
+
+    renderCatCards(categories);
+    renderAgentGrid(agents);
+    renderAgentTable(agents, metrics);
+    renderActiveAndQueue(activeChats, queue);
+    renderPerfTable(metrics);
+    renderActiveChatsDetail(activeChats);
+    renderQueueDetail(queue);
+    renderRatings(ratings, ratings);
+    renderQueueStats(queueStats);
+
+    // Log stats panel
+    el('log-stats').innerHTML = [
+      ['Total Events',  stats.total       || 0],
+      ['Escalations',   stats.escalations || 0],
+      ['FAQ Answers',   stats.faqAnswers  || 0],
+      ['Send Retries',  stats.retries     || 0],
+      ['Failures',      stats.failures    || 0],
+      ['Avg Response',  fmtMs(stats.avgResponseMs)],
+    ].map(([k,v]) => `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span style="color:var(--muted);font-size:.8rem">${k}</span>
+      <span style="font-weight:600">${v}</span>
+    </div>`).join('');
+
+    // Integration toggles
+    if (integrations) {
+      const map = { slack:'t-slack', sheets:'t-sheets', webhook:'t-webhook', email:'t-email' };
+      for (const [k,v] of Object.entries(integrations)) {
+        const btn = el(map[k]);
+        if (btn) btn.classList.toggle('on', !!v);
+      }
+    }
+
+  } catch(e) {
+    console.error('[Dashboard] loadAll error:', e);
+    el('last-updated').textContent = '⚠ Connection error';
+    el('last-updated').style.color = 'var(--red)';
+    showErr(`Could not reach API: ${e.message}. Make sure you're on the correct port (check server console).`);
+  }
+}
+
+// ── MESSAGE FEED ───────────────────────────────────────────────────────────────
+async function loadMessages() {
+  try {
+    const msgs = await apiFetch('/api/messages');
+    el('b-msgs').textContent = msgs.length;
+    const feed = el('msg-feed');
+    if (!msgs.length) { feed.innerHTML = '<div class="empty">No messages yet</div>'; return; }
+    const TYPE_COLOR = { faq_answer:'var(--blue)', escalate:'var(--yellow)', assigned:'var(--green)', manual:'var(--purple)' };
+    feed.innerHTML = msgs.map(m => {
+      const isIn = m.direction==='inbound', isSys = m.direction==='system';
+      const time  = new Date(m.ts).toLocaleTimeString('en-PK',{hour12:false});
+      const color = isSys?'var(--green)':isIn?'var(--green)':(TYPE_COLOR[m.meta?.type]||'var(--muted)');
+      const icon  = isSys?'🔀':isIn?'👤':'🤖';
+      const label = isSys?`System · +${m.phone}`:isIn?`${m.name} (+${m.phone})`:`Bot → +${m.phone}`;
+      const tag   = m.meta?.type?`<span style="font-size:.63rem;padding:1px 6px;border-radius:10px;background:${TYPE_COLOR[m.meta.type]||'var(--muted)'}22;color:${TYPE_COLOR[m.meta.type]||'var(--muted)'};margin-left:5px">${m.meta.type}</span>`:'';
+      const agTag = m.meta?.agent?`<span style="font-size:.63rem;padding:1px 7px;border-radius:10px;background:rgba(37,211,102,.15);color:var(--green);margin-left:5px;font-weight:700">→${m.meta.agent}</span>`:'';
+      return `<div style="padding:9px 14px;border-bottom:1px solid var(--border);display:flex;gap:9px;align-items:flex-start">
+        <div style="width:32px;height:32px;border-radius:50%;background:${color}22;display:flex;align-items:center;justify-content:center;font-size:.9rem;flex-shrink:0">${icon}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.7rem;color:${color};font-weight:700;margin-bottom:2px;display:flex;flex-wrap:wrap;align-items:center;gap:2px">
+            ${esc(label)}${tag}${agTag}
+            <span style="color:var(--muted);font-weight:400;margin-left:5px">${time}</span>
+          </div>
+          <div style="font-size:.8rem;color:var(--text);white-space:pre-wrap;word-break:break-word">${esc(m.text)}</div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) { console.error('[Dashboard] loadMessages error:', e); }
+}
+
+// ── EVENT LOGS ─────────────────────────────────────────────────────────────────
+async function fetchLogs() {
+  try {
+    _logs = await apiFetch('/api/logs?limit=200');
+    renderLogs();
+  } catch(e) { console.error('[Dashboard] fetchLogs error:', e); }
+}
+
+function renderLogs() {
+  const filter = el('log-filter')?.value || '';
+  const filtered = filter ? _logs.filter(l => l.type === filter) : _logs;
+  const feed = el('log-feed');
+  if (!filtered.length) { feed.innerHTML = '<div class="empty">No events yet</div>'; return; }
+  feed.innerHTML = filtered.map(e => {
+    const color  = LOG_COLOR[e.type] || 'var(--muted)';
+    const icon   = LOG_ICON[e.type]  || '•';
+    const time   = new Date(e.ts).toLocaleTimeString('en-PK',{hour12:false});
+    const detail = [
+      e.customerId && `customer:${e.customerId}`,
+      e.agentId    && `agent:${e.agentId}`,
+      e.category   && `cat:${e.category}`,
+      e.intent     && `intent:${e.intent}`,
+      e.status     && `status:${e.status}`,
+      e.responseTimeMs && `rt:${fmtMs(e.responseTimeMs)}`,
+    ].filter(Boolean).join(' · ');
+    return `<div class="log-entry">
+      <div class="log-icon" style="background:${color}22;color:${color}">${icon}</div>
+      <div class="log-body">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div class="log-type" style="color:${color}">${esc(e.type)}</div>
+          <div class="log-time">${time}</div>
+        </div>
+        <div class="log-detail">${detail||'—'}</div>
+        ${e.text?`<div style="font-size:.75rem;color:var(--text);margin-top:3px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.text.slice(0,100))}</div>`:''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── USER MANAGEMENT ───────────────────────────────────────────────────────────
+async function loadUsers() {
+  try {
+    const users = await apiFetch('/api/auth/users');
+    const tbody = el('users-table');
+    if (!users.length) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No users</td></tr>'; return; }
+    tbody.innerHTML = users.map(u => `
+      <tr>
+        <td style="font-weight:600">${esc(u.username)}</td>
+        <td><span style="padding:2px 9px;border-radius:10px;font-size:.7rem;font-weight:700;background:${u.role==='admin'?'rgba(255,92,92,.15)':'rgba(37,211,102,.12)'};color:${u.role==='admin'?'var(--red)':'var(--green)'}">${u.role}</span></td>
+        <td style="color:var(--muted);font-size:.78rem">${u.agentId||'—'}</td>
+        <td><span style="padding:2px 9px;border-radius:10px;font-size:.7rem;font-weight:700;background:${u.enabled?'rgba(37,211,102,.1)':'rgba(124,131,168,.1)'};color:${u.enabled?'var(--green)':'var(--muted)'}">${u.enabled?'Enabled':'Disabled'}</span></td>
+        <td style="color:var(--muted);font-size:.76rem">${new Date(u.createdAt).toLocaleDateString()}</td>
+        <td>
+          <div style="display:flex;gap:5px">
+            <button class="btn btn-muted" style="padding:3px 9px;font-size:.7rem" onclick="toggleUser('${u.id}',${u.enabled})">${u.enabled?'Disable':'Enable'}</button>
+            ${u.username!=='admin'?`<button class="btn" style="padding:3px 9px;font-size:.7rem;background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.3)" onclick="removeUser('${u.id}','${esc(u.username)}')">Remove</button>`:''}
+          </div>
+        </td>
+      </tr>`).join('');
+  } catch(e) { toast('Failed to load users: ' + e.message, true); }
+}
+
+async function addAgent() {
+  const name    = el('nu-name').value.trim();
+  const username = el('nu-username').value.trim();
+  const pass    = el('nu-pass').value;
+  const cat     = el('nu-cat').value;
+  const maxc    = parseInt(el('nu-maxc').value) || 3;
+  const phone   = el('nu-phone').value.trim();
+  const status  = el('nu-status');
+  if (!name || !username || !pass) { toast('Name, username and password required', true); return; }
+  try {
+    status.textContent = 'Creating…';
+    await apiPost('/api/auth/users', { username, password: pass, role: 'agent', name, category: cat, maxConversations: maxc, phone });
+    toast(`Agent "${name}" created ✓`);
+    status.textContent = '';
+    el('nu-name').value = el('nu-username').value = el('nu-pass').value = el('nu-phone').value = '';
+    loadUsers(); loadAll();
+  } catch(e) { toast(e.message, true); status.textContent = ''; }
+}
+
+async function addAdmin() {
+  const username = el('na-username').value.trim();
+  const pass     = el('na-pass').value;
+  const status   = el('na-status');
+  if (!username || !pass) { toast('Username and password required', true); return; }
+  try {
+    status.textContent = 'Creating…';
+    await apiPost('/api/auth/users', { username, password: pass, role: 'admin' });
+    toast(`Admin "${username}" created ✓`);
+    status.textContent = '';
+    el('na-username').value = el('na-pass').value = '';
+    loadUsers();
+  } catch(e) { toast(e.message, true); status.textContent = ''; }
+}
+
+async function toggleUser(id, currentlyEnabled) {
+  try {
+    await apiPatch(`/api/auth/users/${id}`, { enabled: !currentlyEnabled });
+    toast(`User ${currentlyEnabled ? 'disabled' : 'enabled'} ✓`);
+    loadUsers();
+  } catch(e) { toast(e.message, true); }
+}
+
+async function removeUser(id, username) {
+  if (!confirm(`Remove user "${username}"? This also removes their agent entry.`)) return;
+  try {
+    await apiDelete(`/api/auth/users/${id}`);
+    toast(`User "${username}" removed ✓`);
+    loadUsers(); loadAll();
+  } catch(e) { toast(e.message, true); }
+}
+
+// ── INIT ───────────────────────────────────────────────────────────────────────
+loadAll();
+loadMessages();
+fetchLogs();
+
+setInterval(loadAll,      4000);
+setInterval(loadMessages, 3000);
+setInterval(fetchLogs,    5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Login — TEST_MODE</title>
+  <style>
+    :root { --bg:#0f1117; --card:#1a1d27; --border:#2e3248; --text:#e8eaf6; --muted:#7c83a8; --green:#25D366; --red:#ff5c5c; }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; display:flex; align-items:center; justify-content:center; }
+    .login-box { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:36px; width:100%; max-width:380px; }
+    .brand { text-align:center; margin-bottom:6px; }
+    .brand h1 { font-size:1.3rem; }
+    .brand span { font-size:.75rem; color:var(--muted); }
+    .mode { text-align:center; font-size:.7rem; color:#f6c90e; text-transform:uppercase; letter-spacing:.08em; margin-bottom:24px; }
+    .form-grp { margin-bottom:16px; }
+    label { display:block; font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:6px; }
+    select, input { width:100%; background:#0f1117; border:1px solid var(--border); border-radius:10px; padding:11px 12px; color:var(--text); font-size:.9rem; outline:none; }
+    select:focus, input:focus { border-color:var(--green); }
+    .btn { width:100%; background:var(--green); color:#000; border:none; border-radius:10px; padding:12px; font-weight:700; font-size:.95rem; cursor:pointer; margin-top:6px; }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+    .error { color:var(--red); font-size:.8rem; margin-top:12px; text-align:center; display:none; }
+    .info { font-size:.75rem; color:var(--muted); text-align:center; margin-top:18px; line-height:1.5; }
+    .pulse { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulse 2s ease-in-out infinite; margin-right:6px; }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.8)} }
+  </style>
+</head>
+<body>
+
+<div class="login-box">
+  <div class="brand">
+    <h1>Agent Portal</h1>
+    <span>WhatsApp Intelligent Router</span>
+  </div>
+  <div class="mode">TEST_MODE Environment</div>
+
+  <div class="form-grp">
+    <label>Select Agent</label>
+    <select id="agent-select">
+      <option value="">Loading agents…</option>
+    </select>
+  </div>
+
+  <div class="form-grp">
+    <label>Passcode</label>
+    <input id="passcode" type="password" value="1234" placeholder="Enter passcode" />
+  </div>
+
+  <button class="btn" id="login-btn" onclick="doLogin()">Login to Dashboard</button>
+  <div class="error" id="error-msg"></div>
+
+  <div class="info">
+    <span class="pulse"></span>Server running on port 3002<br>
+    Real-time queue & SSE chat enabled
+  </div>
+</div>
+
+<script>
+async function api(url, opts = {}) {
+  const r = await fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+async function loadAgents() {
+  try {
+    const dash = await api("/api/test/dashboard");
+    const sel = document.getElementById("agent-select");
+    sel.innerHTML = '<option value="">Choose agent…</option>' +
+      dash.agents.map(a => `<option value="${a.id}">${a.name} — ${a.category}</option>`).join("");
+  } catch (e) {
+    document.getElementById("error-msg").textContent = "Could not load agents. Is server running?";
+    document.getElementById("error-msg").style.display = "block";
+  }
+}
+
+async function doLogin() {
+  const agentId = document.getElementById("agent-select").value;
+  const passcode = document.getElementById("passcode").value.trim();
+  const err = document.getElementById("error-msg");
+  const btn = document.getElementById("login-btn");
+
+  if (!agentId) { err.textContent = "Please select an agent"; err.style.display = "block"; return; }
+  if (passcode !== "1234") { err.textContent = "Invalid passcode"; err.style.display = "block"; return; }
+
+  btn.disabled = true; btn.textContent = "Logging in…";
+  try {
+    const data = await api("/api/test/login", { method: "POST", body: JSON.stringify({ agentId }) });
+    localStorage.setItem("test_agent_id", data.agent.id);
+    localStorage.setItem("test_agent_name", data.agent.name);
+    location.href = "/test-dashboard.html";
+  } catch (e) {
+    err.textContent = e.message; err.style.display = "block"; btn.disabled = false; btn.textContent = "Login to Dashboard";
+  }
+}
+
+// Already logged in?
+if (localStorage.getItem("test_agent_id")) {
+  location.href = "/test-dashboard.html";
+}
+
+loadAgents();
+</script>
+
+</body>
+</html>

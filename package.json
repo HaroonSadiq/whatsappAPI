@@ -1,0 +1,23 @@
+{
+  "name": "whatsapp-intelligent-router",
+  "version": "1.0.0",
+  "description": "Intelligent WhatsApp message router — AI classifies queries, answers FAQs, and connects customers to the right human agent",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.9.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.3",
+    "socket.io": "^4.8.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

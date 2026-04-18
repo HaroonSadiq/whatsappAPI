@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Dashboard — TEST_MODE</title>
+  <style>
+    :root { --bg:#0f1117; --card:#1a1d27; --card2:#22263a; --border:#2e3248; --text:#e8eaf6; --muted:#7c83a8; --green:#25D366; --blue:#4f8ef7; --red:#ff5c5c; --yellow:#f6c90e; }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+    header { background:#075E54; padding:0 22px; height:60px; display:flex; align-items:center; justify-content:space-between; }
+    .brand { font-weight:700; font-size:1.05rem; }
+    .sub { font-size:.8rem; color:rgba(255,255,255,.7); }
+    .wrap { max-width:1200px; margin:0 auto; padding:20px; display:grid; grid-template-columns:340px 1fr; gap:18px; }
+    @media(max-width:900px){ .wrap { grid-template-columns:1fr; } }
+    .panel { background:var(--card); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+    .panel-head { padding:12px 16px; border-bottom:1px solid var(--border); font-weight:600; font-size:.9rem; display:flex; justify-content:space-between; align-items:center; }
+    .panel-body { padding:12px; }
+    .empty { padding:24px; text-align:center; color:var(--muted); font-size:.85rem; }
+    .sess { background:var(--card2); border:1px solid var(--border); border-radius:10px; padding:12px; margin-bottom:10px; cursor:pointer; transition:border-color .15s; }
+    .sess:hover { border-color:var(--green); }
+    .sess.active { border-color:var(--green); box-shadow:0 0 0 1px var(--green) inset; }
+    .sess-hd { display:flex; justify-content:space-between; font-size:.8rem; margin-bottom:4px; }
+    .sess-id { font-weight:600; }
+    .sess-name { color:var(--text); font-size:.82rem; font-weight:500; }
+    .sess-phone { color:var(--muted); font-size:.75rem; }
+    .btn { padding:6px 12px; border-radius:8px; border:none; font-size:.8rem; font-weight:600; cursor:pointer; }
+    .btn-primary { background:var(--green); color:#000; }
+    .btn-muted { background:var(--card); color:var(--text); border:1px solid var(--border); }
+    .btn-danger { background:rgba(255,92,92,.15); color:var(--red); border:1px solid var(--red); }
+    .chat { display:flex; flex-direction:column; height:calc(100vh - 120px); }
+    .messages { flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:8px; }
+    .msg { max-width:78%; padding:9px 13px; border-radius:12px; font-size:.88rem; line-height:1.4; word-wrap:break-word; }
+    .msg.system { align-self:center; background:rgba(124,131,168,.15); color:var(--muted); font-size:.72rem; border-radius:8px; max-width:92%; }
+    .msg.agent { align-self:flex-end; background:var(--green); color:#000; border-bottom-right-radius:3px; }
+    .msg.customer { align-self:flex-start; background:var(--card2); border:1px solid var(--border); border-bottom-left-radius:3px; }
+    .meta { font-size:.65rem; color:var(--muted); margin-top:3px; }
+    .composer { padding:12px; border-top:1px solid var(--border); display:flex; gap:10px; }
+    .composer input { flex:1; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:10px 12px; color:var(--text); font-size:.9rem; outline:none; }
+    .composer input:focus { border-color:var(--green); }
+    .composer button { background:var(--green); color:#000; border:none; border-radius:10px; padding:0 16px; font-weight:700; }
+    .composer button:disabled { opacity:.5; }
+    .badge { font-size:.65rem; padding:2px 8px; border-radius:12px; font-weight:700; }
+    .bg-yellow { background:rgba(246,201,14,.15); color:var(--yellow); }
+    .bg-green { background:rgba(37,211,102,.15); color:var(--green); }
+    .toast { position:fixed; bottom:16px; right:16px; background:var(--card2); border:1px solid var(--border); border-left:3px solid var(--green); padding:10px 14px; border-radius:8px; font-size:.8rem; animation:fadeIn .2s; z-index:999; }
+    .toast.err { border-left-color:var(--red); }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+    .live-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--green); animation:pulse 2s infinite; margin-right:6px; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="brand">Agent Dashboard <span style="font-size:.7rem;font-weight:400;color:var(--yellow)">TEST_MODE</span></div>
+    <div class="sub" id="agent-info">Loading…</div>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center">
+    <span style="font-size:.75rem;color:rgba(255,255,255,.6)"><span class="live-dot"></span>Live</span>
+    <button class="btn btn-muted" onclick="loadData()">Refresh</button>
+    <button class="btn btn-danger" onclick="logout()">Logout</button>
+  </div>
+</header>
+
+<div id="dashboard" class="wrap">
+  <!-- Sidebar -->
+  <div>
+    <div class="panel" style="margin-bottom:18px">
+      <div class="panel-head">Waiting Queue <span class="badge bg-yellow" id="q-count">0</span></div>
+      <div class="panel-body" id="queue-list"><div class="empty">No waiting sessions</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">My Active Sessions <span class="badge bg-green" id="a-count">0</span></div>
+      <div class="panel-body" id="active-list"><div class="empty">No active sessions</div></div>
+    </div>
+  </div>
+
+  <!-- Chat pane -->
+  <div class="panel chat">
+    <div class="panel-head" id="chat-header">Select a session to chat</div>
+    <div class="messages" id="messages"><div class="empty">No conversation selected</div></div>
+    <div class="composer" id="composer" style="display:none">
+      <input id="msg-input" type="text" placeholder="Type a message…" autocomplete="off" />
+      <button onclick="sendMsg()">Send</button>
+      <button class="btn-danger" onclick="doneSession()">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+let agentId = localStorage.getItem("test_agent_id") || "";
+let reconnectToken = "";
+let currentSessionId = null;
+let es = null;
+let refreshTimer = null;
+
+if (!agentId) location.href = "/test-login.html";
+
+function toast(msg, isErr) {
+  const t = document.createElement("div"); t.className = "toast" + (isErr ? " err" : ""); t.textContent = msg;
+  document.getElementById("toasts").appendChild(t); setTimeout(() => t.remove(), 3500);
+}
+
+async function api(url, opts = {}) {
+  const r = await fetch(url, { ...opts, headers: { "Content-Type": "application/json", "x-agent-id": agentId, ...(opts.headers || {}) } });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+function logout() {
+  localStorage.removeItem("test_agent_id");
+  localStorage.removeItem("test_agent_name");
+  location.href = "/test-login.html";
+}
+
+async function loadData() {
+  try {
+    const [dash, my] = await Promise.all([api("/api/test/dashboard"), api("/api/test/agent/sessions")]);
+    document.getElementById("agent-info").textContent = `${my.agent.name} · ${my.agent.status.toUpperCase()}`;
+    renderQueue(dash.waiting);
+    renderActive(my.sessions);
+  } catch (e) { toast(e.message, true); }
+}
+
+function renderQueue(list) {
+  const el = document.getElementById("queue-list"); document.getElementById("q-count").textContent = list.length;
+  if (!list.length) { el.innerHTML = '<div class="empty">No waiting sessions</div>'; return; }
+  el.innerHTML = list.map(s => `
+    <div class="sess">
+      <div class="sess-hd"><span class="sess-id">${s.session_id}</span><span style="color:var(--muted);font-size:.7rem">${fmtTime(s.created_at)}</span></div>
+      <div class="sess-name">${esc(s.customer_name || s.customer_phone)}</div>
+      <div class="sess-phone">${s.customer_phone}</div>
+      <div style="margin-top:8px"><button class="btn btn-primary" onclick="accept('${s.session_id}')">Accept</button></div>
+    </div>`).join("");
+}
+
+function renderActive(list) {
+  const el = document.getElementById("active-list"); document.getElementById("a-count").textContent = list.length;
+  if (!list.length) { el.innerHTML = '<div class="empty">No active sessions</div>'; return; }
+  el.innerHTML = list.map(s => `
+    <div class="sess ${s.session_id === currentSessionId ? 'active' : ''}" onclick="openChat('${s.session_id}')">
+      <div class="sess-hd"><span class="sess-id">${s.session_id}</span><span style="color:var(--green);font-size:.7rem">Active</span></div>
+      <div class="sess-name">${esc(s.customer_name || s.customer_phone)}</div>
+      <div class="sess-phone">${s.customer_phone}</div>
+    </div>`).join("");
+}
+
+async function accept(sessionId) {
+  try {
+    const data = await api("/api/test/agent/accept", { method: "POST", body: JSON.stringify({ session_id: sessionId }) });
+    reconnectToken = data.reconnect_token;
+    toast("Session accepted");
+    openChat(sessionId);
+    loadData();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function openChat(sessionId) {
+  currentSessionId = sessionId;
+  const msgsEl = document.getElementById("messages"); msgsEl.innerHTML = "";
+  document.getElementById("composer").style.display = "flex";
+  document.getElementById("chat-header").textContent = "Loading…";
+  try {
+    const data = await api(`/api/test/session/${sessionId}/messages`);
+    reconnectToken = data.session.reconnect_token || reconnectToken;
+    const custName = data.session.customer_name || data.session.customer_phone;
+    document.getElementById("chat-header").innerHTML = `Chat with <b>${esc(custName)}</b> <span style="color:var(--muted);font-size:.8rem;font-weight:400">${data.session.customer_phone}</span>`;
+    if (!data.messages.length) msgsEl.innerHTML = '<div class="empty">No messages yet</div>';
+    data.messages.forEach(appendMsg);
+    connectSSE(sessionId);
+    loadData();
+  } catch (e) { toast(e.message, true); }
+}
+
+function appendMsg(m) {
+  document.querySelector("#messages .empty")?.remove();
+  const div = document.createElement("div"); div.className = `msg ${m.direction}`;
+  const t = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  div.innerHTML = `<div>${esc(m.text)}</div><div class="meta">${t}</div>`;
+  const msgsEl = document.getElementById("messages"); msgsEl.appendChild(div); msgsEl.scrollTop = msgsEl.scrollHeight;
+}
+
+function connectSSE(sessionId) {
+  if (es) es.close();
+  es = new EventSource(`/api/test/session/${sessionId}/stream`);
+  es.onmessage = (ev) => {
+    const data = JSON.parse(ev.data);
+    if (data.event === "new_message") appendMsg(data.msg);
+    else if (data.event === "agent_joined") appendMsg({ direction: "system", text: `Agent ${data.agent_name} joined.`, ts: new Date().toISOString() });
+    else if (data.event === "session_closed") {
+      appendMsg({ direction: "system", text: "Session closed.", ts: new Date().toISOString() });
+      document.getElementById("composer").style.display = "none";
+      currentSessionId = null; loadData();
+    }
+  };
+  es.onerror = () => { console.log("SSE reconnecting…"); };
+}
+
+async function sendMsg() {
+  const input = document.getElementById("msg-input");
+  const text = input.value.trim(); if (!text || !currentSessionId) return;
+  input.value = "";
+  try {
+    await api("/api/test/agent/message", { method: "POST", body: JSON.stringify({ session_id: currentSessionId, text }) });
+  } catch (e) { toast(e.message, true); }
+}
+
+document.getElementById("msg-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMsg(); });
+
+async function doneSession() {
+  if (!currentSessionId) return;
+  try {
+    await api("/api/test/agent/done", { method: "POST", body: JSON.stringify({ session_id: currentSessionId, reason: "done" }) });
+    toast("Session closed");
+    currentSessionId = null;
+    document.getElementById("composer").style.display = "none";
+    document.getElementById("chat-header").textContent = "Select a session to chat";
+    document.getElementById("messages").innerHTML = '<div class="empty">No conversation selected</div>';
+    if (es) es.close();
+    loadData();
+  } catch (e) { toast(e.message, true); }
+}
+
+function fmtTime(iso) {
+  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (s < 60) return s + "s ago"; return Math.floor(s / 60) + "m ago";
+}
+function esc(t) { return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+loadData();
+refreshTimer = setInterval(loadData, 3000);
+</script>
+</body>
+</html>

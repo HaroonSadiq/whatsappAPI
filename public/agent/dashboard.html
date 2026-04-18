@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Dashboard — WhatsApp Router</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --green: #25D366; --green-d: #128C7E; --teal: #075E54;
+      --bg: #0f1117; --card: #1a1d27; --card2: #22263a;
+      --border: #2e3248; --text: #e8eaf6; --muted: #7c83a8;
+      --yellow: #f6c90e; --red: #ff5c5c; --blue: #4f8ef7;
+      --radius: 10px;
+    }
+    html, body { height: 100%; overflow: hidden; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 13px; display: flex; flex-direction: column; }
+
+    /* ── NAV ── */
+    nav { background: var(--teal); padding: 0 18px; height: 54px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .nav-left  { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: .95rem; }
+    .nav-right { display: flex; align-items: center; gap: 14px; font-size: .8rem; }
+    .agent-name { color: rgba(255,255,255,.85); }
+    .status-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; transition: background .2s; }
+    .dot-available { background: var(--green); }
+    .dot-offline   { background: var(--muted); }
+    .dot-busy      { background: var(--red); }
+    .dot-cooldown  { background: var(--yellow); }
+    .logout-btn { background: rgba(255,255,255,.12); border: none; color: #fff; padding: 5px 11px; border-radius: 6px; cursor: pointer; font-size: .78rem; }
+    .logout-btn:hover { background: rgba(255,255,255,.22); }
+    .conn-badge { font-size: .7rem; padding: 2px 7px; border-radius: 20px; font-weight: 600; }
+    .conn-ok  { background: rgba(37,211,102,.15); color: var(--green); }
+    .conn-err { background: rgba(255,92,92,.15);  color: var(--red);   }
+
+    /* ── LAYOUT ── */
+    .layout { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── SIDEBAR ── */
+    .sidebar { width: 280px; border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; overflow: hidden; }
+    .sidebar-section { padding: 12px 14px 6px; font-size: .65rem; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; display: flex; align-items: center; justify-content: space-between; }
+    .count-badge { background: var(--card2); border: 1px solid var(--border); border-radius: 10px; padding: 0 7px; font-size: .65rem; color: var(--muted); }
+    .session-list { overflow-y: auto; flex: 1; }
+    .session-card {
+      padding: 11px 14px; border-bottom: 1px solid var(--border); cursor: pointer;
+      transition: background .1s; position: relative;
+    }
+    .session-card:hover  { background: rgba(255,255,255,.03); }
+    .session-card.active { background: rgba(37,211,102,.06); border-left: 3px solid var(--green); }
+    .session-card.selected { background: var(--card2); }
+    .sc-name  { font-weight: 600; font-size: .84rem; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sc-meta  { font-size: .7rem; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+    .sc-unread { position: absolute; right: 12px; top: 11px; background: var(--green); color: #fff; border-radius: 10px; padding: 1px 6px; font-size: .65rem; font-weight: 700; }
+    .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: .62rem; font-weight: 700; text-transform: uppercase; }
+    .bg-tech     { background: rgba(79,142,247,.15);  color: var(--blue); }
+    .bg-clothing { background: rgba(171,71,188,.15);  color: #ab47bc; }
+    .bg-general  { background: rgba(124,131,168,.1);  color: var(--muted); }
+    .bg-waiting  { background: rgba(246,201,14,.1);   color: var(--yellow); }
+    .bg-active   { background: rgba(37,211,102,.12);  color: var(--green); }
+    .accept-btn {
+      margin-top: 8px; width: 100%; padding: 6px; border-radius: 6px;
+      border: 1px solid var(--green); background: transparent; color: var(--green);
+      cursor: pointer; font-size: .75rem; font-weight: 600; transition: all .15s;
+    }
+    .accept-btn:hover { background: var(--green); color: #fff; }
+    .empty-state { padding: 30px 14px; text-align: center; color: var(--muted); font-size: .8rem; }
+
+    /* ── DIVIDER ── */
+    .sidebar-divider { border-top: 1px solid var(--border); margin: 0; }
+
+    /* ── CHAT AREA ── */
+    .chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .chat-header { padding: 13px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; background: var(--card); }
+    .chat-customer { display: flex; flex-direction: column; gap: 3px; }
+    .chat-customer-name { font-weight: 700; font-size: .95rem; }
+    .chat-customer-meta { font-size: .72rem; color: var(--muted); }
+    .chat-actions { display: flex; gap: 8px; }
+    .done-btn { background: var(--red); border: none; color: #fff; padding: 7px 16px; border-radius: 7px; cursor: pointer; font-size: .8rem; font-weight: 700; }
+    .done-btn:hover { opacity: .85; }
+    .no-chat { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: .9rem; flex-direction: column; gap: 12px; }
+    .no-chat svg { opacity: .15; }
+
+    /* ── MESSAGES ── */
+    .messages { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+    .msg { max-width: 70%; padding: 9px 13px; border-radius: 12px; font-size: .85rem; line-height: 1.45; word-break: break-word; }
+    .msg-customer { background: var(--card2); border: 1px solid var(--border); align-self: flex-start; border-bottom-left-radius: 3px; }
+    .msg-agent    { background: #1a3a2a; border: 1px solid #2a5a3a; align-self: flex-end; border-bottom-right-radius: 3px; }
+    .msg-bot      { background: rgba(79,142,247,.08); border: 1px solid rgba(79,142,247,.2); align-self: flex-start; border-bottom-left-radius: 3px; font-style: italic; color: var(--muted); }
+    .msg-system   { align-self: center; background: rgba(124,131,168,.08); border: 1px solid var(--border); color: var(--muted); font-size: .72rem; padding: 4px 10px; border-radius: 20px; max-width: 90%; text-align: center; }
+    .msg-label    { font-size: .65rem; color: var(--muted); margin-bottom: 3px; display: flex; gap: 6px; align-items: center; }
+    .msg-time     { margin-left: auto; }
+    .msg-wrap     { display: flex; flex-direction: column; }
+    .msg-wrap.right { align-items: flex-end; }
+
+    /* ── COMPOSER ── */
+    .composer { border-top: 1px solid var(--border); padding: 12px 16px; display: flex; gap: 10px; align-items: flex-end; background: var(--card); flex-shrink: 0; }
+    textarea {
+      flex: 1; background: #111318; border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 12px; color: var(--text); font-size: .88rem; resize: none;
+      min-height: 42px; max-height: 120px; outline: none; font-family: inherit;
+      transition: border-color .15s; line-height: 1.4;
+    }
+    textarea:focus { border-color: var(--green); }
+    .send-btn {
+      background: var(--green); border: none; color: #fff; width: 42px; height: 42px;
+      border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: opacity .15s;
+    }
+    .send-btn:hover    { opacity: .85; }
+    .send-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .send-btn svg      { width: 18px; height: 18px; fill: #fff; }
+
+    /* ── AI SUGGEST ── */
+    .ai-suggest { background: rgba(79,142,247,.06); border: 1px solid rgba(79,142,247,.2); border-radius: 8px; padding: 9px 13px; font-size: .78rem; color: var(--muted); display: none; flex-shrink: 0; margin: 0 16px 8px; cursor: pointer; transition: border-color .15s; }
+    .ai-suggest:hover { border-color: var(--blue); color: var(--text); }
+    .ai-suggest strong { color: var(--blue); }
+
+    /* ── SCROLLBAR ── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-left">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+    </svg>
+    Agent Dashboard
+  </div>
+  <div class="nav-right">
+    <div class="status-toggle" id="status-toggle" title="Toggle availability">
+      <div class="status-dot dot-available" id="status-dot"></div>
+      <span id="status-label">Available</span>
+    </div>
+    <span class="agent-name" id="agent-name-label">—</span>
+    <span class="conn-badge conn-err" id="conn-badge">Connecting…</span>
+    <button class="logout-btn" onclick="logout()">Logout</button>
+  </div>
+</nav>
+
+<!-- LAYOUT -->
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+
+    <!-- Waiting -->
+    <div class="sidebar-section">
+      Waiting <span class="count-badge" id="waiting-count">0</span>
+    </div>
+    <div id="waiting-list"></div>
+
+    <div class="sidebar-divider"></div>
+
+    <!-- Active -->
+    <div class="sidebar-section">
+      My Active Chats <span class="count-badge" id="active-count">0</span>
+    </div>
+    <div class="session-list" id="active-list"></div>
+
+  </div>
+
+  <!-- CHAT -->
+  <div class="chat-area" id="chat-area">
+    <div class="no-chat" id="no-chat">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/>
+      </svg>
+      Select a chat or accept a waiting session
+    </div>
+    <div id="active-chat" style="display:none; flex:1; flex-direction:column; overflow:hidden;">
+      <div class="chat-header">
+        <div class="chat-customer">
+          <div class="chat-customer-name" id="chat-cust-name">—</div>
+          <div class="chat-customer-meta" id="chat-cust-meta">—</div>
+        </div>
+        <div class="chat-actions">
+          <button class="done-btn" id="done-btn" onclick="markDone()">Mark Done ✓</button>
+        </div>
+      </div>
+      <div class="messages" id="messages"></div>
+      <div class="ai-suggest" id="ai-suggest" onclick="useAiSuggest()">
+        <strong>AI suggested:</strong> <span id="ai-suggest-text"></span>
+      </div>
+      <div class="composer">
+        <textarea id="msg-input" placeholder="Type your reply…" rows="1" onkeydown="handleKey(event)"></textarea>
+        <button class="send-btn" id="send-btn" onclick="sendMessage()" title="Send (Enter)">
+          <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+const token = localStorage.getItem('wa_token');
+const me    = JSON.parse(localStorage.getItem('wa_user') || 'null');
+if (!token || !me) window.location.href = '/login';
+
+function logout() {
+  localStorage.removeItem('wa_token');
+  localStorage.removeItem('wa_user');
+  window.location.href = '/login';
+}
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let socket;
+let sessions        = {};   // id → session
+let messages        = {};   // sessionId → [{sender,text,timestamp}]
+let selectedSession = null;
+let myStatus        = 'available';
+let unread          = {};   // sessionId → count
+
+// ─── Connect Socket.IO ────────────────────────────────────────────────────────
+function connect() {
+  socket = io({ transports: ['websocket', 'polling'] });
+
+  socket.on('connect', () => {
+    socket.emit('authenticate', token, (res) => {
+      if (res.error) { alert('Auth failed: ' + res.error); logout(); return; }
+      setBadge(true);
+      document.getElementById('agent-name-label').textContent = res.user.username;
+      // Load initial sessions
+      (res.sessions || []).forEach(s => {
+        if (s.agentId === me.agentId || s.state === 'waiting') {
+          sessions[s.id] = s;
+          messages[s.id] = messages[s.id] || [];
+        }
+      });
+      renderSidebar();
+    });
+  });
+
+  socket.on('disconnect', () => setBadge(false));
+  socket.on('connect_error', () => setBadge(false));
+
+  // ── New session (assigned to me) ──────────────────────────────────────────
+  socket.on('session:new', ({ session, messages: msgs }) => {
+    if (session.agentId !== me.agentId && session.state !== 'waiting') return;
+    sessions[session.id] = session;
+    messages[session.id] = msgs || [];
+    unread[session.id]   = (unread[session.id] || 0) + 1;
+    renderSidebar();
+    notify(`New chat: ${session.customerName}`, session.category);
+  });
+
+  // ── Session activated (agent accepted) ───────────────────────────────────
+  socket.on('session:activated', ({ session }) => {
+    sessions[session.id] = session;
+    if (selectedSession === session.id) renderChat(session.id);
+    renderSidebar();
+  });
+
+  // ── Incoming message ──────────────────────────────────────────────────────
+  socket.on('session:message', ({ sessionId, message }) => {
+    if (!messages[sessionId]) messages[sessionId] = [];
+    messages[sessionId].push(message);
+    if (selectedSession === sessionId) {
+      appendMessage(message);
+      scrollToBottom();
+    } else {
+      unread[sessionId] = (unread[sessionId] || 0) + 1;
+      renderSidebar();
+    }
+    if (message.sender === 'customer') {
+      notify(`${sessions[sessionId]?.customerName}: ${message.text.slice(0, 60)}`);
+    }
+  });
+
+  // ── Session closed ────────────────────────────────────────────────────────
+  socket.on('session:closed', ({ sessionId }) => {
+    if (sessions[sessionId]) sessions[sessionId].state = 'closed';
+    if (selectedSession === sessionId) {
+      appendSystemMsg('Session closed. Customer has been sent a rating prompt.');
+      document.getElementById('done-btn').disabled = true;
+      document.getElementById('msg-input').disabled = true;
+      document.getElementById('send-btn').disabled  = true;
+    }
+    setTimeout(() => {
+      delete sessions[sessionId];
+      if (selectedSession === sessionId) {
+        selectedSession = null;
+        showNoChat();
+      }
+      renderSidebar();
+    }, 3000);
+  });
+
+  // ── Agent status update ───────────────────────────────────────────────────
+  socket.on('agent:status', ({ agentId, status }) => {
+    if (agentId === me.agentId) updateStatusUI(status);
+  });
+}
+
+// ─── Actions ──────────────────────────────────────────────────────────────────
+function acceptSession(sessionId) {
+  socket.emit('agent:accept', { sessionId }, (res) => {
+    if (res.error) return alert('Accept failed: ' + res.error);
+    sessions[sessionId] = res.session;
+    messages[sessionId] = res.messages || [];
+    unread[sessionId]   = 0;
+    selectSession(sessionId);
+    renderSidebar();
+  });
+}
+
+function selectSession(sessionId) {
+  selectedSession    = sessionId;
+  unread[sessionId]  = 0;
+  renderChat(sessionId);
+  renderSidebar();
+  setTimeout(() => document.getElementById('msg-input')?.focus(), 50);
+}
+
+function sendMessage() {
+  const input = document.getElementById('msg-input');
+  const text  = input.value.trim();
+  if (!text || !selectedSession) return;
+
+  const session = sessions[selectedSession];
+  if (session?.state !== 'active') return alert('Session not active.');
+
+  input.value = '';
+  input.style.height = '';
+
+  socket.emit('agent:message', { sessionId: selectedSession, text }, (res) => {
+    if (res.error) return alert('Send failed: ' + res.error);
+    if (!messages[selectedSession]) messages[selectedSession] = [];
+    messages[selectedSession].push(res.message);
+    appendMessage(res.message);
+    scrollToBottom();
+    document.getElementById('ai-suggest').style.display = 'none';
+  });
+}
+
+function markDone() {
+  if (!selectedSession) return;
+  if (!confirm('Mark this session as done? Customer will receive a rating prompt.')) return;
+
+  socket.emit('agent:done', { sessionId: selectedSession }, (res) => {
+    if (res.error) return alert('Failed: ' + res.error);
+  });
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+}
+
+// Status toggle
+document.getElementById('status-toggle').addEventListener('click', () => {
+  const next = myStatus === 'available' ? 'offline' : 'available';
+  socket.emit('agent:status', { status: next }, (res) => {
+    if (!res.error) updateStatusUI(next);
+  });
+});
+
+function updateStatusUI(status) {
+  myStatus = status;
+  const dot = document.getElementById('status-dot');
+  const lbl = document.getElementById('status-label');
+  dot.className = 'status-dot dot-' + status;
+  lbl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+// ─── Render ───────────────────────────────────────────────────────────────────
+function renderSidebar() {
+  const waiting = Object.values(sessions).filter(s => s.state === 'waiting' && s.assignedAgentId === me.agentId);
+  const active  = Object.values(sessions).filter(s => s.state === 'active'  && s.agentId === me.agentId);
+
+  document.getElementById('waiting-count').textContent = waiting.length;
+  document.getElementById('active-count').textContent  = active.length;
+
+  // Waiting list
+  const wList = document.getElementById('waiting-list');
+  wList.innerHTML = waiting.length === 0
+    ? '<div class="empty-state">No waiting chats</div>'
+    : waiting.map(s => `
+        <div class="session-card ${selectedSession === s.id ? 'selected' : ''}" onclick="selectSession('${s.id}')">
+          <div class="sc-name">${esc(s.customerName)}</div>
+          <div class="sc-meta">
+            <span class="badge bg-${s.category}">${s.category}</span>
+            <span class="badge bg-waiting">Waiting</span>
+            <span>${timeSince(s.createdAt)}</span>
+          </div>
+          <button class="accept-btn" onclick="event.stopPropagation(); acceptSession('${s.id}')">Accept Chat</button>
+        </div>`).join('');
+
+  // Active list
+  const aList = document.getElementById('active-list');
+  aList.innerHTML = active.length === 0
+    ? '<div class="empty-state">No active chats</div>'
+    : active.map(s => `
+        <div class="session-card active ${selectedSession === s.id ? 'selected' : ''}" onclick="selectSession('${s.id}')">
+          <div class="sc-name">${esc(s.customerName)}</div>
+          <div class="sc-meta">
+            <span class="badge bg-${s.category}">${s.category}</span>
+            <span class="badge bg-active">Active</span>
+            <span>${timeSince(s.assignedAt)}</span>
+          </div>
+          ${unread[s.id] ? `<div class="sc-unread">${unread[s.id]}</div>` : ''}
+        </div>`).join('');
+}
+
+function renderChat(sessionId) {
+  const session = sessions[sessionId];
+  if (!session) return showNoChat();
+
+  document.getElementById('no-chat').style.display     = 'none';
+  const chatEl = document.getElementById('active-chat');
+  chatEl.style.display    = 'flex';
+  chatEl.style.flex       = '1';
+
+  document.getElementById('chat-cust-name').textContent = session.customerName || session.customerPhone;
+  document.getElementById('chat-cust-meta').textContent =
+    `+${session.customerPhone}  •  ${session.category}  •  ${session.state === 'waiting' ? 'Waiting for acceptance' : 'Active'}`;
+
+  const doneBtn  = document.getElementById('done-btn');
+  const inputEl  = document.getElementById('msg-input');
+  const sendBtn  = document.getElementById('send-btn');
+  const isActive = session.state === 'active';
+  doneBtn.disabled  = !isActive;
+  inputEl.disabled  = !isActive;
+  sendBtn.disabled  = !isActive;
+
+  // Render messages
+  const msgEl = document.getElementById('messages');
+  msgEl.innerHTML = '';
+  (messages[sessionId] || []).forEach(m => appendMessage(m, false));
+  scrollToBottom();
+
+  // AI suggestion
+  if (session.aiSuggestedReply && session.state === 'waiting') {
+    document.getElementById('ai-suggest-text').textContent = session.aiSuggestedReply;
+    document.getElementById('ai-suggest').style.display = 'block';
+  } else {
+    document.getElementById('ai-suggest').style.display = 'none';
+  }
+}
+
+function appendMessage(msg, scroll = false) {
+  const msgEl = document.getElementById('messages');
+  if (!msgEl) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-wrap ' + (msg.sender === 'agent' ? 'right' : '');
+
+  const label = document.createElement('div');
+  label.className = 'msg-label';
+  label.innerHTML =
+    `<span>${msg.sender === 'customer' ? '👤 Customer' : msg.sender === 'agent' ? '👷 You' : '🤖 Bot'}</span>` +
+    `<span class="msg-time">${fmtTime(msg.timestamp)}</span>`;
+
+  const bubble = document.createElement('div');
+  bubble.className = 'msg msg-' + msg.sender;
+  bubble.textContent = msg.text;
+
+  wrap.appendChild(label);
+  wrap.appendChild(bubble);
+  msgEl.appendChild(wrap);
+  if (scroll) scrollToBottom();
+}
+
+function appendSystemMsg(text) {
+  const msgEl = document.getElementById('messages');
+  if (!msgEl) return;
+  const div = document.createElement('div');
+  div.className = 'msg msg-system';
+  div.textContent = text;
+  msgEl.appendChild(div);
+  scrollToBottom();
+}
+
+function showNoChat() {
+  document.getElementById('no-chat').style.display  = 'flex';
+  const chatEl = document.getElementById('active-chat');
+  chatEl.style.display = 'none';
+}
+
+function useAiSuggest() {
+  const text = document.getElementById('ai-suggest-text').textContent;
+  document.getElementById('msg-input').value = text;
+  document.getElementById('ai-suggest').style.display = 'none';
+  document.getElementById('msg-input').focus();
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function scrollToBottom() {
+  const el = document.getElementById('messages');
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+function setBadge(ok) {
+  const b = document.getElementById('conn-badge');
+  b.textContent  = ok ? 'Connected' : 'Disconnected';
+  b.className    = 'conn-badge ' + (ok ? 'conn-ok' : 'conn-err');
+}
+
+function esc(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function timeSince(ts) {
+  if (!ts) return '';
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60)   return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  return Math.floor(s/3600) + 'h ago';
+}
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function notify(title, body = '') {
+  if (Notification.permission === 'granted') {
+    new Notification(title, { body, icon: '/favicon.ico' });
+  }
+}
+
+// Auto-resize textarea
+document.getElementById('msg-input').addEventListener('input', function() {
+  this.style.height = '';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+// Request notification permission
+if (Notification.permission === 'default') Notification.requestPermission();
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+connect();
+</script>
+</body>
+</html>
