@@ -1,8 +1,15 @@
 {
-  "functions": {
-    "api/**/*.js": {
-      "memory": 128,
-      "maxDuration": 10
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/handler.cjs",
+      "use": "@vercel/node"
     }
-  }
+  ],
+  "routes": [
+    {
+      "src": "/api/handler",
+      "dest": "/api/handler.cjs"
+    }
+  ]
 }
