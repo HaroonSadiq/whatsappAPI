@@ -4,7 +4,7 @@
  * Centralises auth headers and the message-send endpoint in one place.
  */
 
-const BASE_URL = "https://graph.facebook.com/v19.0";
+const BASE_URL = "https://graph.facebook.com/v21.0";
 
 /**
  * Send a plain-text WhatsApp message.

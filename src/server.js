@@ -521,12 +521,17 @@ if (TEST_MODE) {
   console.log("🔷 TEST_MODE enabled");
 }
 
-// ─── Start ────────────────────────────────────────────────────────────────────
-httpServer.listen(PORT, () => {
-  console.log(`\n✅ WhatsApp Support Platform running on port ${PORT}`);
-  console.log(`   Admin dashboard : http://localhost:${PORT}/`);
-  console.log(`   Agent dashboard : http://localhost:${PORT}/agent`);
-  console.log(`   Login           : http://localhost:${PORT}/login`);
-  console.log(`   Webhook         : POST /webhook`);
-  console.log(`   Default admin   : admin / admin123\n`);
-});
+// ─── Start (local only — Vercel manages its own HTTP server) ──────────────────
+if (!process.env.VERCEL) {
+  httpServer.listen(PORT, () => {
+    console.log(`\n✅ WhatsApp Support Platform running on port ${PORT}`);
+    console.log(`   Admin dashboard : http://localhost:${PORT}/`);
+    console.log(`   Agent dashboard : http://localhost:${PORT}/agent`);
+    console.log(`   Login           : http://localhost:${PORT}/login`);
+    console.log(`   Webhook         : POST /webhook`);
+    console.log(`   Default admin   : admin / admin123\n`);
+  });
+}
+
+export { app, httpServer };
+export default httpServer;

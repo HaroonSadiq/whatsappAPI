@@ -1,15 +1,8 @@
 {
-  "installCommand": "npm install --ignore-scripts",
   "builds": [
-    {
-      "src": "api/webhook.mjs",
-      "use": "@vercel/node"
-    }
+    { "src": "api/index.js", "use": "@vercel/node" }
   ],
   "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/api/webhook.mjs"
-    }
+    { "src": "/(.*)", "dest": "/api/index.js" }
   ]
 }

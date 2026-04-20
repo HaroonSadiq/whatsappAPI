@@ -5,7 +5,10 @@
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+if (!process.env.GEMINI_API_KEY) {
+  console.warn("[Classifier] GEMINI_API_KEY is not set — AI classification will be unavailable.");
+}
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
 
 // ─── Product Knowledge Base ───────────────────────────────────────────────────
 const PRODUCT_KB = `
