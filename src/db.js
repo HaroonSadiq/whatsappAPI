@@ -120,6 +120,17 @@ db.exec(`
     total_response_ms INTEGER DEFAULT 0,
     last_active_at    INTEGER
   );
+
+  -- ── Users (agents + admins) ───────────────────────────────────────────────
+  CREATE TABLE IF NOT EXISTS users (
+    id            TEXT    PRIMARY KEY,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    role          TEXT    NOT NULL DEFAULT 'agent',
+    agent_id      TEXT,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT    NOT NULL
+  );
 `);
 
 export default db;

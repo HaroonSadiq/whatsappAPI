@@ -21,6 +21,7 @@ import { createServer } from "http";
 import { Server as SocketIO } from "socket.io";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import { createHmac, timingSafeEqual } from "crypto";
 
 // ─── Session & state ──────────────────────────────────────────────────────────
 import {
@@ -75,6 +76,7 @@ if (TEST_MODE) {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT         = process.env.PORT || 3001;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const APP_SECRET   = process.env.APP_SECRET;
 
 const FOLLOW_UP_DELAY_MS  = 5 * 60 * 1000;
 const CLOSE_CHAT_DELAY_MS = 5 * 60 * 1000;
@@ -87,7 +89,9 @@ const io         = new SocketIO(httpServer, {
   transports: ["websocket", "polling"],
 });
 
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buf) => { req.rawBody = buf; },
+}));
 
 // ─── Page routes (before static, so /agent doesn't 301 to /agent/) ───────────
 app.get("/login", (_req, res) => res.sendFile(join(__dirname, "../public/login.html")));
@@ -132,6 +136,19 @@ app.get("/webhook", (req, res) => {
 // ─── Incoming WhatsApp messages ───────────────────────────────────────────────
 app.post("/webhook", (req, res) => {
   if (TEST_MODE) return handleTestModeWebhook(req, res);
+
+  // Verify Meta signature when APP_SECRET is configured
+  if (APP_SECRET) {
+    const sig = req.headers["x-hub-signature-256"];
+    if (!sig) return res.status(403).end();
+    const expected = "sha256=" + createHmac("sha256", APP_SECRET).update(req.rawBody).digest("hex");
+    const sigBuf      = Buffer.from(sig);
+    const expectedBuf = Buffer.from(expected);
+    if (sigBuf.length !== expectedBuf.length || !timingSafeEqual(sigBuf, expectedBuf)) {
+      return res.status(403).end();
+    }
+  }
+
   res.sendStatus(200);
 
   const value   = req.body?.entry?.[0]?.changes?.[0]?.value;

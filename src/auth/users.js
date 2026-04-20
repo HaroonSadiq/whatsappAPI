@@ -1,76 +1,86 @@
-import bcrypt from 'bcryptjs';
+import bcrypt      from 'bcryptjs';
 import { randomUUID } from 'crypto';
+import { db }       from '../db.js';
 
 /**
- * In-memory user store.
+ * SQLite-backed user store.
  * Schema: { id, username, passwordHash, role: 'admin'|'agent', agentId, enabled, createdAt }
  *
- * Seeded with one admin account (admin / admin123).
- * Replace with a database in production.
+ * Seeded with one admin account (admin / admin123) on first run.
  */
 
-const users = new Map();
-
-function seed() {
-  const id = randomUUID();
-  users.set(id, {
-    id,
-    username: 'admin',
-    passwordHash: bcrypt.hashSync('admin123', 10),
-    role: 'admin',
-    agentId: null,
-    enabled: true,
-    createdAt: new Date().toISOString(),
-  });
+// Seed default admin if the table is empty
+const existing = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
+if (!existing) {
+  db.prepare(`
+    INSERT INTO users (id, username, password_hash, role, agent_id, enabled, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    randomUUID(), 'admin',
+    bcrypt.hashSync('admin123', 10),
+    'admin', null, 1, new Date().toISOString(),
+  );
 }
-seed();
+
+// ─── Row mapper ───────────────────────────────────────────────────────────────
+function toUser(row) {
+  if (!row) return null;
+  return {
+    id:           row.id,
+    username:     row.username,
+    passwordHash: row.password_hash,
+    role:         row.role,
+    agentId:      row.agent_id,
+    enabled:      row.enabled === 1,
+    createdAt:    row.created_at,
+  };
+}
 
 // ─── Queries ──────────────────────────────────────────────────────────────────
-
 export function findByUsername(username) {
-  return [...users.values()].find(u => u.username === username);
+  return toUser(db.prepare('SELECT * FROM users WHERE username = ?').get(username));
 }
 
 export function findById(id) {
-  return users.get(id);
+  return toUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
 }
 
 export function getAllUsers() {
-  return [...users.values()].map(sanitize);
+  return db.prepare('SELECT * FROM users').all().map(toUser).map(sanitize);
 }
 
 // ─── Mutations ────────────────────────────────────────────────────────────────
-
 export function createUser({ username, password, role, agentId = null }) {
   if (findByUsername(username)) throw new Error('Username already exists');
   const id = randomUUID();
-  const user = {
-    id,
-    username,
-    passwordHash: bcrypt.hashSync(password, 10),
-    role,
-    agentId,
-    enabled: true,
-    createdAt: new Date().toISOString(),
-  };
-  users.set(id, user);
-  return sanitize(user);
+  db.prepare(`
+    INSERT INTO users (id, username, password_hash, role, agent_id, enabled, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, username, bcrypt.hashSync(password, 10), role, agentId, 1, new Date().toISOString());
+  return sanitize(findById(id));
 }
 
 export function updateUser(id, updates) {
-  const user = users.get(id);
-  if (!user) return null;
-  const updated = { ...user, ...updates };
-  if (updates.password) {
-    updated.passwordHash = bcrypt.hashSync(updates.password, 10);
-    delete updated.password;
+  if (!findById(id)) return null;
+  if (updates.password !== undefined) {
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
+      .run(bcrypt.hashSync(updates.password, 10), id);
   }
-  users.set(id, updated);
-  return sanitize(updated);
+  if (updates.enabled !== undefined) {
+    db.prepare('UPDATE users SET enabled = ? WHERE id = ?')
+      .run(updates.enabled ? 1 : 0, id);
+  }
+  if (updates.role !== undefined) {
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(updates.role, id);
+  }
+  if (updates.agentId !== undefined) {
+    db.prepare('UPDATE users SET agent_id = ? WHERE id = ?').run(updates.agentId, id);
+  }
+  return sanitize(findById(id));
 }
 
 export function deleteUser(id) {
-  return users.delete(id);
+  return db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
 }
 
 export function verifyPassword(user, password) {

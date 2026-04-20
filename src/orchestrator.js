@@ -16,7 +16,15 @@
  *  via WebSocket (Socket.IO) through appEvents.
  */
 
-import { classifyAndRespond }            from "./classifier.js";
+import { classifyAndRespond as _gemini } from "./classifier.js";
+
+let classifyAndRespond = _gemini;
+if (process.env.AI_CLASSIFIER === "kimi") {
+  const { classifyAndRespond: _kimi } = await import("./classifier-kimi.js");
+  classifyAndRespond = _kimi;
+  console.log("🤖 Using Kimi classifier");
+}
+
 import {
   findAvailableAgent, assignConversation, setAgentStatus,
   markAgentFailed, completeChat,
