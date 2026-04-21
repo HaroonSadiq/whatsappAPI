@@ -19,22 +19,23 @@ import { logEvent } from "./logger.js";
 import { db }       from "./db.js";
 
 // ─── Metric persistence helpers ───────────────────────────────────────────────
-const _upsertMetrics = db.prepare(`
-  INSERT INTO agent_metrics (agent_id, chat_count, total_response_ms, last_active_at)
-  VALUES (@agent_id, @chat_count, @total_response_ms, @last_active_at)
-  ON CONFLICT(agent_id) DO UPDATE SET
-    chat_count        = excluded.chat_count,
-    total_response_ms = excluded.total_response_ms,
-    last_active_at    = excluded.last_active_at
-`);
 
+// Fire-and-forget — metrics loss on failure is acceptable (in-memory is source of truth)
 function _persistMetrics(agent) {
-  _upsertMetrics.run({
-    agent_id:          agent.id,
-    chat_count:        agent.chatCount,
-    total_response_ms: agent.totalResponseMs,
-    last_active_at:    agent.lastActiveAt,
-  });
+  db.execute({
+    sql: `INSERT INTO agent_metrics (agent_id, chat_count, total_response_ms, last_active_at)
+          VALUES (@agent_id, @chat_count, @total_response_ms, @last_active_at)
+          ON CONFLICT(agent_id) DO UPDATE SET
+            chat_count        = excluded.chat_count,
+            total_response_ms = excluded.total_response_ms,
+            last_active_at    = excluded.last_active_at`,
+    args: {
+      agent_id:          agent.id,
+      chat_count:        agent.chatCount,
+      total_response_ms: agent.totalResponseMs,
+      last_active_at:    agent.lastActiveAt,
+    },
+  }).catch(err => console.error('[Agents] metrics persist error:', err.message));
 }
 
 export const AGENT_STATES = {
@@ -154,19 +155,25 @@ export const agentRegistry = {
 };
 
 // ─── Restore persisted metrics on startup ────────────────────────────────────
-{
-  const rows = db.prepare('SELECT * FROM agent_metrics').all();
-  const metricMap = new Map(rows.map(r => [r.agent_id, r]));
+
+/**
+ * initAgentMetrics — load lifetime metrics from DB into the in-memory registry.
+ * Must be called once at startup (after initDb).
+ */
+export async function initAgentMetrics() {
+  const result = await db.execute('SELECT * FROM agent_metrics');
+  const metricMap = new Map(result.rows.map(r => [r.agent_id, r]));
   for (const agents of Object.values(agentRegistry)) {
     for (const agent of agents) {
       const m = metricMap.get(agent.id);
       if (m) {
-        agent.chatCount       = m.chat_count;
-        agent.totalResponseMs = m.total_response_ms;
-        agent.lastActiveAt    = m.last_active_at;
+        agent.chatCount       = Number(m.chat_count);
+        agent.totalResponseMs = Number(m.total_response_ms);
+        agent.lastActiveAt    = m.last_active_at ? Number(m.last_active_at) : null;
       }
     }
   }
+  console.log('[Agents] Metrics restored from DB');
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────

@@ -1,133 +1,83 @@
 /**
  * session.js
- * Persistent session store backed by SQLite.
+ * Async session store backed by LibSQL (Turso).
  *
- * All state survives server restarts except:
- *  - followUpTimers  (setTimeout handles — cannot be serialised)
- *  - cooldownTimers  (same — live in agents.js)
+ * All exported functions are async — await them at call sites.
+ * followUpTimers remain in-memory (setTimeout handles cannot be serialised).
  */
 
 import { db } from './db.js';
 
 const MAX_HISTORY = 20;
 
-// ─── Prepared statements ──────────────────────────────────────────────────────
-
-const stmts = {
-  // messages
-  insertMsg:    db.prepare('INSERT INTO messages (phone, role, content, ts) VALUES (?, ?, ?, ?)'),
-  selectMsgs:   db.prepare('SELECT role, content, ts FROM messages WHERE phone = ? ORDER BY ts DESC LIMIT ?'),
-  deleteMsgs:   db.prepare('DELETE FROM messages WHERE phone = ?'),
-
-  // states
-  getState:     db.prepare('SELECT state FROM conversation_states WHERE phone = ?'),
-  upsertState:  db.prepare('INSERT INTO conversation_states (phone, state) VALUES (?, ?) ON CONFLICT(phone) DO UPDATE SET state = excluded.state'),
-  deleteState:  db.prepare('DELETE FROM conversation_states WHERE phone = ?'),
-
-  // session meta
-  getMeta:      db.prepare('SELECT * FROM session_meta WHERE phone = ?'),
-  upsertMeta:   db.prepare(`
-    INSERT INTO session_meta (phone, first_message_at, last_message_at, message_count, intent_history, category, sentiment)
-    VALUES (@phone, @first_message_at, @last_message_at, @message_count, @intent_history, @category, @sentiment)
-    ON CONFLICT(phone) DO UPDATE SET
-      last_message_at  = excluded.last_message_at,
-      message_count    = excluded.message_count,
-      intent_history   = excluded.intent_history,
-      category         = COALESCE(excluded.category, session_meta.category),
-      sentiment        = COALESCE(excluded.sentiment, session_meta.sentiment)
-  `),
-  deleteMeta:   db.prepare('DELETE FROM session_meta WHERE phone = ?'),
-
-  // contacts
-  getContact:    db.prepare('SELECT * FROM contacts WHERE phone = ?'),
-  upsertContact: db.prepare(`
-    INSERT INTO contacts (phone, name, last_seen) VALUES (@phone, @name, @last_seen)
-    ON CONFLICT(phone) DO UPDATE SET
-      name      = COALESCE(excluded.name, contacts.name),
-      last_seen = excluded.last_seen
-  `),
-  deleteContact: db.prepare('DELETE FROM contacts WHERE phone = ?'),
-
-  // active chats
-  getChat:       db.prepare('SELECT * FROM active_chats WHERE customer_phone = ?'),
-  upsertChat:    db.prepare(`
-    INSERT INTO active_chats (customer_phone, agent_id, agent_name, assigned_at)
-    VALUES (@customer_phone, @agent_id, @agent_name, @assigned_at)
-    ON CONFLICT(customer_phone) DO UPDATE SET
-      agent_id    = excluded.agent_id,
-      agent_name  = excluded.agent_name,
-      assigned_at = excluded.assigned_at
-  `),
-  deleteChat:    db.prepare('DELETE FROM active_chats WHERE customer_phone = ?'),
-  allChats:      db.prepare('SELECT * FROM active_chats'),
-
-  // queue
-  insertQueue:   db.prepare(`
-    INSERT OR IGNORE INTO queue (phone, name, category, enqueued_at, priority, retry_count)
-    VALUES (@phone, @name, @category, @enqueued_at, @priority, @retry_count)
-  `),
-  deleteQueue:   db.prepare('DELETE FROM queue WHERE phone = ?'),
-  allQueue:      db.prepare('SELECT * FROM queue ORDER BY priority DESC, enqueued_at ASC'),
-  updateFallback: db.prepare('UPDATE queue SET ai_fallback_sent = 1 WHERE phone = ?'),
-  nextQueue:     db.prepare(`
-    SELECT * FROM queue
-    WHERE category = ? OR category = 'general'
-    ORDER BY priority DESC, enqueued_at ASC
-    LIMIT 1
-  `),
-
-  // ratings
-  insertRating: db.prepare('INSERT INTO ratings (phone, name, score, created_at) VALUES (?, ?, ?, ?)'),
-  allRatings:   db.prepare('SELECT * FROM ratings ORDER BY id ASC'),
-};
-
 // ─── Conversation history ─────────────────────────────────────────────────────
 
-export function getHistory(phone) {
-  const rows = stmts.selectMsgs.all(phone, MAX_HISTORY);
-  return rows.reverse().map(r => ({ role: r.role, content: r.content, ts: r.ts }));
+export async function getHistory(phone) {
+  const result = await db.execute({
+    sql: 'SELECT role, content, ts FROM messages WHERE phone = ? ORDER BY ts DESC LIMIT ?',
+    args: [phone, MAX_HISTORY],
+  });
+  return result.rows.slice().reverse().map(r => ({ role: r.role, content: r.content, ts: Number(r.ts) }));
 }
 
-export function addToHistory(phone, role, content) {
-  stmts.insertMsg.run(phone, role, content, Date.now());
+export async function addToHistory(phone, role, content) {
+  await db.execute({
+    sql: 'INSERT INTO messages (phone, role, content, ts) VALUES (?, ?, ?, ?)',
+    args: [phone, role, content, Date.now()],
+  });
 }
 
-export function clearSession(phone) {
-  stmts.deleteMsgs.run(phone);
-  stmts.deleteState.run(phone);
-  stmts.deleteContact.run(phone);
-  stmts.deleteMeta.run(phone);
+export async function clearSession(phone) {
+  await db.execute({ sql: 'DELETE FROM messages             WHERE phone = ?', args: [phone] });
+  await db.execute({ sql: 'DELETE FROM conversation_states  WHERE phone = ?', args: [phone] });
+  await db.execute({ sql: 'DELETE FROM contacts             WHERE phone = ?', args: [phone] });
+  await db.execute({ sql: 'DELETE FROM session_meta         WHERE phone = ?', args: [phone] });
   // active_chats cleared separately via releaseAssignment
 }
 
 // ─── Conversation states ──────────────────────────────────────────────────────
 
-export function getState(phone) {
-  return stmts.getState.get(phone)?.state ?? 'new';
+export async function getState(phone) {
+  const result = await db.execute({
+    sql: 'SELECT state FROM conversation_states WHERE phone = ?',
+    args: [phone],
+  });
+  return result.rows[0]?.state ?? 'new';
 }
 
-export function setState(phone, state) {
-  stmts.upsertState.run(phone, state);
+export async function setState(phone, state) {
+  await db.execute({
+    sql: 'INSERT INTO conversation_states (phone, state) VALUES (?, ?) ON CONFLICT(phone) DO UPDATE SET state = excluded.state',
+    args: [phone, state],
+  });
 }
 
 // ─── Session metadata ─────────────────────────────────────────────────────────
 
-export function getSessionMeta(phone) {
-  const row = stmts.getMeta.get(phone);
+export async function getSessionMeta(phone) {
+  const result = await db.execute({
+    sql: 'SELECT * FROM session_meta WHERE phone = ?',
+    args: [phone],
+  });
+  const row = result.rows[0];
   if (!row) return {};
   return {
-    firstMessageAt: row.first_message_at,
-    lastMessageAt:  row.last_message_at,
-    messageCount:   row.message_count,
+    firstMessageAt: Number(row.first_message_at),
+    lastMessageAt:  Number(row.last_message_at),
+    messageCount:   Number(row.message_count),
     intentHistory:  JSON.parse(row.intent_history || '[]'),
     category:       row.category,
     sentiment:      row.sentiment,
   };
 }
 
-export function updateSessionMeta(phone, fields) {
-  const existing = stmts.getMeta.get(phone);
-  const now      = Date.now();
+export async function updateSessionMeta(phone, fields) {
+  const existingResult = await db.execute({
+    sql: 'SELECT * FROM session_meta WHERE phone = ?',
+    args: [phone],
+  });
+  const existing = existingResult.rows[0] ?? null;
+  const now = Date.now();
 
   const intentHistory = (() => {
     const prev = JSON.parse(existing?.intent_history || '[]');
@@ -137,16 +87,28 @@ export function updateSessionMeta(phone, fields) {
     return prev;
   })();
 
-  stmts.upsertMeta.run({
-    phone,
-    first_message_at: existing?.first_message_at ?? now,
-    last_message_at:  now,
-    message_count:    fields.messageCount !== undefined
-      ? fields.messageCount
-      : (existing?.message_count ?? 0) + 1,
-    intent_history: JSON.stringify(intentHistory),
-    category:  fields.category  ?? null,
-    sentiment: fields.sentiment ?? null,
+  await db.execute({
+    sql: `INSERT INTO session_meta
+            (phone, first_message_at, last_message_at, message_count, intent_history, category, sentiment)
+          VALUES
+            (@phone, @first_message_at, @last_message_at, @message_count, @intent_history, @category, @sentiment)
+          ON CONFLICT(phone) DO UPDATE SET
+            last_message_at  = excluded.last_message_at,
+            message_count    = excluded.message_count,
+            intent_history   = excluded.intent_history,
+            category         = COALESCE(excluded.category,  session_meta.category),
+            sentiment        = COALESCE(excluded.sentiment, session_meta.sentiment)`,
+    args: {
+      phone,
+      first_message_at: existing?.first_message_at ?? now,
+      last_message_at:  now,
+      message_count:    fields.messageCount !== undefined
+        ? fields.messageCount
+        : (Number(existing?.message_count ?? 0) + 1),
+      intent_history: JSON.stringify(intentHistory),
+      category:  fields.category  ?? null,
+      sentiment: fields.sentiment ?? null,
+    },
   });
 
   return getSessionMeta(phone);
@@ -154,109 +116,149 @@ export function updateSessionMeta(phone, fields) {
 
 // ─── Contact info ─────────────────────────────────────────────────────────────
 
-export function getContact(phone) {
-  return stmts.getContact.get(phone) ?? { phone };
+export async function getContact(phone) {
+  const result = await db.execute({
+    sql: 'SELECT * FROM contacts WHERE phone = ?',
+    args: [phone],
+  });
+  return result.rows[0] ?? { phone };
 }
 
-export function updateContact(phone, fields) {
-  stmts.upsertContact.run({
-    phone,
-    name:      fields.name ?? null,
-    last_seen: Date.now(),
+export async function updateContact(phone, fields) {
+  await db.execute({
+    sql: `INSERT INTO contacts (phone, name, last_seen) VALUES (@phone, @name, @last_seen)
+          ON CONFLICT(phone) DO UPDATE SET
+            name      = COALESCE(excluded.name, contacts.name),
+            last_seen = excluded.last_seen`,
+    args: { phone, name: fields.name ?? null, last_seen: Date.now() },
   });
 }
 
 // ─── Active agent assignments ─────────────────────────────────────────────────
 
-export function assignAgent(customerPhone, agent) {
-  stmts.upsertChat.run({
-    customer_phone: customerPhone,
-    agent_id:       agent.id,
-    agent_name:     agent.name,
-    assigned_at:    Date.now(),
+export async function assignAgent(customerPhone, agent) {
+  await db.execute({
+    sql: `INSERT INTO active_chats (customer_phone, agent_id, agent_name, assigned_at)
+          VALUES (@customer_phone, @agent_id, @agent_name, @assigned_at)
+          ON CONFLICT(customer_phone) DO UPDATE SET
+            agent_id    = excluded.agent_id,
+            agent_name  = excluded.agent_name,
+            assigned_at = excluded.assigned_at`,
+    args: {
+      customer_phone: customerPhone,
+      agent_id:       agent.id,
+      agent_name:     agent.name,
+      assigned_at:    Date.now(),
+    },
   });
 }
 
-export function getAssignment(customerPhone) {
-  const row = stmts.getChat.get(customerPhone);
+export async function getAssignment(customerPhone) {
+  const result = await db.execute({
+    sql: 'SELECT * FROM active_chats WHERE customer_phone = ?',
+    args: [customerPhone],
+  });
+  const row = result.rows[0];
   if (!row) return null;
   return {
     agentId:    row.agent_id,
     agentName:  row.agent_name,
-    assignedAt: row.assigned_at,
+    assignedAt: Number(row.assigned_at),
   };
 }
 
-export function releaseAssignment(customerPhone) {
-  stmts.deleteChat.run(customerPhone);
+export async function releaseAssignment(customerPhone) {
+  await db.execute({
+    sql: 'DELETE FROM active_chats WHERE customer_phone = ?',
+    args: [customerPhone],
+  });
 }
 
-export function getActiveChats() {
-  return stmts.allChats.all().map(row => ({
+export async function getActiveChats() {
+  const result = await db.execute('SELECT * FROM active_chats');
+  return result.rows.map(row => ({
     phone:      row.customer_phone,
     agentId:    row.agent_id,
     agentName:  row.agent_name,
-    assignedAt: row.assigned_at,
+    assignedAt: Number(row.assigned_at),
   }));
 }
 
 // ─── Customer queue ───────────────────────────────────────────────────────────
 
-export function enqueue(phone, name, category, opts = {}) {
-  stmts.insertQueue.run({
-    phone,
-    name,
-    category,
-    enqueued_at: Date.now(),
-    priority:    opts.priority   ?? 0,
-    retry_count: opts.retryCount ?? 0,
+export async function enqueue(phone, name, category, opts = {}) {
+  await db.execute({
+    sql: `INSERT OR IGNORE INTO queue (phone, name, category, enqueued_at, priority, retry_count)
+          VALUES (@phone, @name, @category, @enqueued_at, @priority, @retry_count)`,
+    args: {
+      phone,
+      name,
+      category,
+      enqueued_at: Date.now(),
+      priority:    opts.priority   ?? 0,
+      retry_count: opts.retryCount ?? 0,
+    },
   });
 }
 
-export function dequeue(phone) {
-  stmts.deleteQueue.run(phone);
+export async function dequeue(phone) {
+  await db.execute({ sql: 'DELETE FROM queue WHERE phone = ?', args: [phone] });
 }
 
-export function nextInQueue(category) {
-  const row = stmts.nextQueue.get(category);
+export async function nextInQueue(category) {
+  const result = await db.execute({
+    sql: `SELECT * FROM queue
+          WHERE category = ? OR category = 'general'
+          ORDER BY priority DESC, enqueued_at ASC
+          LIMIT 1`,
+    args: [category],
+  });
+  const row = result.rows[0];
   if (!row) return null;
-  stmts.deleteQueue.run(row.phone);
+  await db.execute({ sql: 'DELETE FROM queue WHERE phone = ?', args: [row.phone] });
   return _rowToQueueEntry(row);
 }
 
-export function getQueue() {
-  return stmts.allQueue.all().map(_rowToQueueEntry);
+export async function getQueue() {
+  const result = await db.execute(
+    'SELECT * FROM queue ORDER BY priority DESC, enqueued_at ASC'
+  );
+  return result.rows.map(_rowToQueueEntry);
 }
 
-export function updateQueueEntry(phone, fields) {
+export async function updateQueueEntry(phone, fields) {
   if (fields._aiFallbackSent) {
-    stmts.updateFallback.run(phone);
+    await db.execute({ sql: 'UPDATE queue SET ai_fallback_sent = 1 WHERE phone = ?', args: [phone] });
   }
 }
 
 function _rowToQueueEntry(row) {
   return {
-    phone:          row.phone,
-    name:           row.name,
-    category:       row.category,
-    enqueuedAt:     row.enqueued_at,
-    priority:       row.priority,
-    retryCount:     row.retry_count,
-    _aiFallbackSent: row.ai_fallback_sent === 1,
+    phone:           row.phone,
+    name:            row.name,
+    category:        row.category,
+    enqueuedAt:      Number(row.enqueued_at),
+    priority:        Number(row.priority),
+    retryCount:      Number(row.retry_count),
+    _aiFallbackSent: Number(row.ai_fallback_sent) === 1,
   };
 }
 
 // ─── Ratings ──────────────────────────────────────────────────────────────────
 
-export function saveRating(phone, name, score) {
-  stmts.insertRating.run(phone, name, score, new Date().toISOString());
+export async function saveRating(phone, name, score) {
+  await db.execute({
+    sql: 'INSERT INTO ratings (phone, name, score, created_at) VALUES (?, ?, ?, ?)',
+    args: [phone, name, score, new Date().toISOString()],
+  });
 }
 
-export function getRatings() {
-  return stmts.allRatings.all().map(r => ({
+export async function getRatings() {
+  const result = await db.execute('SELECT * FROM ratings ORDER BY id ASC');
+  return result.rows.map(r => ({
     phone:     r.phone,
     name:      r.name,
-    score:     r.score,
+    score:     Number(r.score),
     createdAt: r.created_at,
   }));
 }

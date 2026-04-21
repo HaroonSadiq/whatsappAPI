@@ -23,6 +23,15 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { createHmac, timingSafeEqual } from "crypto";
 
+// ─── DB init ──────────────────────────────────────────────────────────────────
+import { initDb }          from "./db.js";
+import { initUsers }       from "./auth/users.js";
+import { initAgentMetrics } from "./agents.js";
+
+await initDb();
+await initUsers();
+await initAgentMetrics();
+
 // ─── Session & state ──────────────────────────────────────────────────────────
 import {
   getHistory, addToHistory, clearSession,
@@ -161,7 +170,7 @@ app.post("/webhook", (req, res) => {
 
   enqueueJob(phone, async () => {
     try {
-      updateContact(phone, { name });
+      await updateContact(phone, { name });
       clearFollowUpTimer(phone);
 
       // Interactive button reply
@@ -173,10 +182,10 @@ app.post("/webhook", (req, res) => {
       if (msg.type !== "text") return;
 
       const text  = msg.text.body.trim();
-      const state = getState(phone);
+      const state = await getState(phone);
       console.log(`📩 [${state}] ${name} (+${phone}): ${text}`);
       logMsg("inbound", phone, name, text, { state });
-      updateSessionMeta(phone, { intent: null });
+      await updateSessionMeta(phone, { intent: null });
 
       switch (state) {
         case "new":
@@ -186,20 +195,19 @@ app.post("/webhook", (req, res) => {
           await handleActiveConversation(phone, name, text);
           break;
         case "escalated":
-          // Message from customer while agent is handling — push to agent dashboard
-          addToHistory(phone, "user", text);
+          await addToHistory(phone, "user", text);
           logMsg("inbound", phone, name, text, { state: "escalated" });
-          pushCustomerMessage(phone, name, text);
+          await pushCustomerMessage(phone, name, text);
           break;
         case "awaiting_rating":
           await handleRating(phone, name, text);
           break;
         case "closed":
-          setState(phone, "new");
+          await setState(phone, "new");
           await handleNewCustomer(phone, name, text);
           break;
         default:
-          setState(phone, "active");
+          await setState(phone, "active");
           await handleActiveConversation(phone, name, text);
       }
     } catch (err) {
@@ -211,8 +219,8 @@ app.post("/webhook", (req, res) => {
 
 // ─── New customer ─────────────────────────────────────────────────────────────
 async function handleNewCustomer(phone, name, text) {
-  setState(phone, "active");
-  addToHistory(phone, "user", text);
+  await setState(phone, "active");
+  await addToHistory(phone, "user", text);
   const firstName = name.split(" ")[0];
   const greeting =
     `Hi ${firstName}! 👋 Welcome! I'm your virtual assistant.\n\n` +
@@ -223,13 +231,13 @@ async function handleNewCustomer(phone, name, text) {
 
 // ─── Active AI conversation ───────────────────────────────────────────────────
 async function handleActiveConversation(phone, name, text, alreadyInHistory = false) {
-  if (!alreadyInHistory) addToHistory(phone, "user", text);
+  if (!alreadyInHistory) await addToHistory(phone, "user", text);
 
-  const history = getHistory(phone);
+  const history = await getHistory(phone);
   const result  = await orchestrate(phone, name, text, history, logMsg);
 
-  addToHistory(phone, "assistant", result.reply);
-  updateSessionMeta(phone, {
+  await addToHistory(phone, "assistant", result.reply);
+  await updateSessionMeta(phone, {
     intent: result.type, category: result.productCategory, sentiment: result.customerSentiment,
   });
 
@@ -268,7 +276,7 @@ async function handleButtonReply(phone, name, buttonId) {
 
     case "connect_human": {
       await sendMessage(phone, "Sure! Let me find the right specialist for you. One moment... 🙏");
-      const history = getHistory(phone);
+      const history = await getHistory(phone);
       const lastMsg = [...history].reverse().find((h) => h.role === "user");
       const result  = await classifyIntent("I want to speak to a human agent", history);
       await orchestrate(phone, name, lastMsg?.content || "Customer requested support", history, logMsg, result);
@@ -277,7 +285,7 @@ async function handleButtonReply(phone, name, buttonId) {
 
     case "book_demo": {
       await sendMessage(phone, "Great choice! Let me connect you with a specialist who will arrange a demo for you. 📅");
-      const history = getHistory(phone);
+      const history = await getHistory(phone);
       const lastMsg = [...history].reverse().find((h) => h.role === "user");
       const result  = await classifyIntent("I want to book a demo", history);
       result.reason = "Customer requested demo booking";
@@ -295,17 +303,17 @@ async function handleButtonReply(phone, name, buttonId) {
 async function handleRating(phone, name, text) {
   const score = parseInt(text.trim(), 10);
   if (score >= 1 && score <= 5) {
-    saveRating(phone, name, score);
+    await saveRating(phone, name, score);
     onRating({ customerPhone: phone, customerName: name, score }).catch(() => {});
     logEvent({ type: EVENT_TYPES.RATING, customerId: phone, status: "success", meta: { score } });
     const stars = "⭐".repeat(score);
     await sendMessage(phone,
       `Thank you for rating us ${stars} (${score}/5)! Your feedback means a lot. 🙏\n\nFeel free to message us anytime! 👋`
     );
-    setState(phone, "closed");
-    clearSession(phone);
+    await setState(phone, "closed");
+    await clearSession(phone);
   } else {
-    setState(phone, "active");
+    await setState(phone, "active");
     await handleActiveConversation(phone, name, text);
   }
 }
@@ -316,14 +324,14 @@ function scheduleFollowUp(phone, name) {
   const firstName = name.split(" ")[0];
 
   const t1 = setTimeout(async () => {
-    if (getState(phone) !== "active") return;
+    if ((await getState(phone)) !== "active") return;
     await sendMessage(phone, `Hi ${firstName}, just checking if you're still there? 😊`);
 
     const t2 = setTimeout(async () => {
-      if (getState(phone) !== "active") return;
+      if ((await getState(phone)) !== "active") return;
       await sendMessage(phone, "I'll close the chat for now, but feel free to message us anytime! 👋");
-      setState(phone, "closed");
-      clearSession(phone);
+      await setState(phone, "closed");
+      await clearSession(phone);
     }, CLOSE_CHAT_DELAY_MS);
 
     setFollowUpTimer(phone, t2);
@@ -338,51 +346,53 @@ function scheduleFollowUp(phone, name) {
 app.get("/status", (_req, res) => {
   res.json({
     agents:       getAvailabilitySnapshot(),
-    queue:        getQueue(),
-    activeChats:  getActiveChats(),
-    ratings:      getRatings(),
     integrations: integrationState,
   });
 });
 
 /** GET /api/dashboard — full data for admin dashboard */
-app.get("/api/dashboard", requireAuth, (_req, res) => {
-  const agents   = getAvailabilitySnapshot();
-  const queue    = getQueue();
-  const ratings  = getRatings();
-  const all      = Object.values(agents).flat();
+app.get("/api/dashboard", requireAuth, async (_req, res) => {
+  try {
+    const agents   = getAvailabilitySnapshot();
+    const queue    = await getQueue();
+    const ratings  = await getRatings();
+    const all      = Object.values(agents).flat();
 
-  const totalAgents     = all.length;
-  const availableAgents = all.filter((a) => a.status === AGENT_STATES.AVAILABLE).length;
-  const busyAgents      = all.filter((a) => a.status === AGENT_STATES.BUSY).length;
-  const offlineAgents   = all.filter((a) => a.status === AGENT_STATES.OFFLINE).length;
-  const cooldownAgents  = all.filter((a) => a.status === AGENT_STATES.COOLDOWN).length;
-  const failedAgents    = all.filter((a) => a.status === AGENT_STATES.FAILED).length;
-  const avgRating       = ratings.length
-    ? (ratings.reduce((s, r) => s + r.score, 0) / ratings.length).toFixed(1)
-    : null;
+    const totalAgents     = all.length;
+    const availableAgents = all.filter((a) => a.status === AGENT_STATES.AVAILABLE).length;
+    const busyAgents      = all.filter((a) => a.status === AGENT_STATES.BUSY).length;
+    const offlineAgents   = all.filter((a) => a.status === AGENT_STATES.OFFLINE).length;
+    const cooldownAgents  = all.filter((a) => a.status === AGENT_STATES.COOLDOWN).length;
+    const failedAgents    = all.filter((a) => a.status === AGENT_STATES.FAILED).length;
+    const avgRating       = ratings.length
+      ? (ratings.reduce((s, r) => s + r.score, 0) / ratings.length).toFixed(1)
+      : null;
 
-  const logStats = getLogStats();
+    const logStats = getLogStats();
 
-  res.json({
-    agents,
-    categories:  getCategorySnapshot(),
-    queue,
-    ratings: ratings.slice(-20).reverse(),
-    activeChats: getActiveChats(),
-    metrics: getAgentMetrics(),
-    sessions: getAllSessions(),
-    stats: {
-      totalAgents, availableAgents, busyAgents,
-      offlineAgents, cooldownAgents, failedAgents,
-      queueLength: queue.length,
-      totalRatings: ratings.length,
-      avgRating,
-      ...logStats,
-    },
-    queueStats:    getQueueStats(),
-    timestamp:     new Date().toISOString(),
-  });
+    res.json({
+      agents,
+      categories:  getCategorySnapshot(),
+      queue,
+      ratings: ratings.slice(-20).reverse(),
+      activeChats: await getActiveChats(),
+      metrics: getAgentMetrics(),
+      sessions: await getAllSessions(),
+      stats: {
+        totalAgents, availableAgents, busyAgents,
+        offlineAgents, cooldownAgents, failedAgents,
+        queueLength: queue.length,
+        totalRatings: ratings.length,
+        avgRating,
+        ...logStats,
+      },
+      queueStats:    getQueueStats(),
+      timestamp:     new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("[Dashboard]", err);
+    res.status(500).json({ error: "Failed to load dashboard data" });
+  }
 });
 
 /** GET /api/messages */
@@ -407,24 +417,24 @@ app.get("/api/metrics", requireAuth, (_req, res) => {
 });
 
 /** GET /api/sessions — all support sessions */
-app.get("/api/sessions", requireAuth, (_req, res) => {
-  res.json(getAllSessions());
+app.get("/api/sessions", requireAuth, async (_req, res) => {
+  res.json(await getAllSessions());
 });
 
 /** GET /api/sessions/mine — sessions for logged-in agent */
-app.get("/api/sessions/mine", requireAgent, (req, res) => {
-  const sessions = getAllSessions().filter(
+app.get("/api/sessions/mine", requireAgent, async (req, res) => {
+  const sessions = (await getAllSessions()).filter(
     s => s.agentId === req.user.agentId && s.state !== 'closed'
   );
   res.json(sessions);
 });
 
 /** GET /api/sessions/:id/history */
-app.get("/api/sessions/:id/history", requireAuth, (req, res) => {
-  const sessions = getAllSessions();
+app.get("/api/sessions/:id/history", requireAuth, async (req, res) => {
+  const sessions = await getAllSessions();
   const session  = sessions.find(s => s.id === req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
-  res.json(getHistory(session.customerPhone));
+  res.json(await getHistory(session.customerPhone));
 });
 
 /** POST /integrations/toggle */
@@ -443,11 +453,11 @@ app.post("/agent-done", requireAuth, async (req, res) => {
   if (!agentId || !customerPhone) {
     return res.status(400).json({ error: "agentId and customerPhone required" });
   }
-  const session = getSessionByPhone(customerPhone);
-  if (session) closeSession(session.id);
+  const session = await getSessionByPhone(customerPhone);
+  if (session) await closeSession(session.id);
   releaseConversation(agentId);
-  releaseAssignment(customerPhone);
-  setState(customerPhone, "awaiting_rating");
+  await releaseAssignment(customerPhone);
+  await setState(customerPhone, "awaiting_rating");
   await sendMessage(customerPhone, "Your query has been resolved. Thank you! 🙏\nPlease rate your experience (reply 1–5).");
   logEvent({ type: EVENT_TYPES.DONE, customerId: customerPhone, agentId, status: "success" });
   await processNextInQueue(logMsg);
@@ -479,15 +489,15 @@ app.post("/api/assign", requireAdmin, async (req, res) => {
   const { customerPhone } = req.body;
   if (!customerPhone) return res.status(400).json({ error: "customerPhone required" });
 
-  const queue = getQueue();
+  const queue = await getQueue();
   const entry = queue.find((e) => e.phone === customerPhone);
   if (!entry) return res.status(404).json({ error: "Customer not in queue" });
 
   const agent = findAvailableAgent(entry.category);
   if (!agent) return res.status(409).json({ error: "No available agent for this category" });
 
-  dequeue(customerPhone);
-  const history = getHistory(customerPhone);
+  await dequeue(customerPhone);
+  const history = await getHistory(customerPhone);
   const lastMsg = [...history].reverse().find((h) => h.role === "user");
 
   await orchestrate(customerPhone, entry.name, lastMsg?.content || "(manual assign)", history, logMsg, {

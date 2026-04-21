@@ -11,20 +11,25 @@ const router = Router();
 // ─── Public ───────────────────────────────────────────────────────────────────
 
 /** POST /api/auth/login */
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
-  const user = findByUsername(username);
-  if (!user || !user.enabled || !verifyPassword(user, password)) {
-    return res.status(401).json({ error: 'Invalid credentials' });
+  try {
+    const user = await findByUsername(username);
+    if (!user || !user.enabled || !verifyPassword(user, password)) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    const token = generateToken(user);
+    res.json({
+      token,
+      user: { id: user.id, username: user.username, role: user.role, agentId: user.agentId },
+    });
+  } catch (err) {
+    console.error('[Auth] login error:', err.message);
+    res.status(500).json({ error: 'Login failed' });
   }
-  const token = generateToken(user);
-  res.json({
-    token,
-    user: { id: user.id, username: user.username, role: user.role, agentId: user.agentId },
-  });
 });
 
 // ─── Authenticated ────────────────────────────────────────────────────────────
@@ -38,16 +43,19 @@ router.get('/me', requireAuth, (req, res) => {
 // ─── Admin: user management ───────────────────────────────────────────────────
 
 /** GET /api/auth/users */
-router.get('/users', requireAdmin, (_req, res) => {
-  res.json(getAllUsers());
+router.get('/users', requireAdmin, async (_req, res) => {
+  try {
+    res.json(await getAllUsers());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /**
  * POST /api/auth/users
  * Body: { username, password, role, name, phone, category, skills[], maxConversations }
- * Creates a user account AND (for role=agent) a corresponding agent registry entry.
  */
-router.post('/users', requireAdmin, (req, res) => {
+router.post('/users', requireAdmin, async (req, res) => {
   const { username, password, role, name, phone, category, skills, maxConversations } = req.body;
   if (!username || !password || !role) {
     return res.status(400).json({ error: 'username, password, role required' });
@@ -67,7 +75,7 @@ router.post('/users', requireAdmin, (req, res) => {
       });
       agentId = agent.id;
     }
-    const user = createUser({ username, password, role, agentId });
+    const user = await createUser({ username, password, role, agentId });
     res.json({ user, agentId });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -75,20 +83,28 @@ router.post('/users', requireAdmin, (req, res) => {
 });
 
 /** PATCH /api/auth/users/:id — enable/disable or change password */
-router.patch('/users/:id', requireAdmin, (req, res) => {
-  const user = updateUser(req.params.id, req.body);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json(user);
+router.patch('/users/:id', requireAdmin, async (req, res) => {
+  try {
+    const user = await updateUser(req.params.id, req.body);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 /** DELETE /api/auth/users/:id */
-router.delete('/users/:id', requireAdmin, (req, res) => {
-  const users = getAllUsers();
-  const target = users.find(u => u.id === req.params.id);
-  if (!target) return res.status(404).json({ error: 'User not found' });
-  if (target.agentId) removeAgent(target.agentId);
-  deleteUser(req.params.id);
-  res.json({ ok: true });
+router.delete('/users/:id', requireAdmin, async (req, res) => {
+  try {
+    const users  = await getAllUsers();
+    const target = users.find(u => u.id === req.params.id);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    if (target.agentId) removeAgent(target.agentId);
+    await deleteUser(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

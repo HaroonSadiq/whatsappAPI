@@ -9,11 +9,6 @@
  *  4. fallbackIfBusy        — priority queue when all agents busy
  *  5. processNextInQueue    — auto-dequeue when an agent frees up
  *  6. orchestrate           — full pipeline entry point
- *
- * Key architecture change:
- *  Agents are no longer alerted via WhatsApp.
- *  Instead, a support session is created and pushed to the agent's web dashboard
- *  via WebSocket (Socket.IO) through appEvents.
  */
 
 import { classifyAndRespond as _gemini } from "./classifier.js";
@@ -53,10 +48,6 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/**
- * sendWithRetry — sends to customer only (WhatsApp).
- * No longer sends to agent phone — agents use web dashboard.
- */
 async function sendWithRetry(to, text) {
   let lastErr;
   for (let attempt = 1; attempt <= MAX_SEND_RETRIES; attempt++) {
@@ -101,23 +92,14 @@ export function selectAgent(category) {
 }
 
 // ─── Step 4 — Assign + push to agent dashboard ───────────────────────────────
-/**
- * Assigns the customer to an agent.
- * - Customer receives a "connecting…" message via WhatsApp.
- * - Agent receives a new session pushed to their web dashboard via WebSocket.
- * - NO WhatsApp alerts are sent to agents.
- *
- * Throws "NO_AGENT_AVAILABLE" if all agents are at capacity / offline.
- */
 export async function assignToAgent(phone, name, text, result, logMsg, history = []) {
   const agent = selectAgent(result.productCategory);
   if (!agent) throw new Error("NO_AGENT_AVAILABLE");
 
   assignConversation(agent.id);
-  assignAgent(phone, agent);
-  setState(phone, "escalated");
+  await assignAgent(phone, agent);
+  await setState(phone, "escalated");
 
-  // Tell customer they're being connected
   const connectMsg =
     `Connecting you with *${agent.name}*, our ${result.productCategory} specialist.\n` +
     `They'll be with you in a moment! 🙏`;
@@ -129,41 +111,35 @@ export async function assignToAgent(phone, name, text, result, logMsg, history =
   try {
     await sendWithRetry(phone, connectMsg);
   } catch (err) {
-    // Customer unreachable — release agent and abort
     setAgentStatus(agent.id, AGENT_STATES.AVAILABLE);
     throw err;
   }
 
-  // Create a support session visible in the agent's web dashboard
-  const existingSession = getSessionByPhone(phone);
-  const session = existingSession || createSession({
+  const existingSession = await getSessionByPhone(phone);
+  const session = existingSession || await createSession({
     customerPhone: phone,
     customerName:  name,
     category:      result.productCategory,
     priority:      result.customerSentiment === "frustrated" ? 1 : 0,
   });
 
-  // Persist agent pre-assignment and AI context (waiting → active when agent accepts)
-  updateSession(session.id, {
+  await updateSession(session.id, {
     assignedAgentId:  agent.id,
     agentName:        agent.name,
     aiSuggestedReply: result.reply,
     reason:           result.reason,
   });
-  // Refresh the local object so downstream code sees the updated fields
   session.assignedAgentId  = agent.id;
   session.agentName        = agent.name;
   session.aiSuggestedReply = result.reply;
   session.reason           = result.reason;
 
-  // Build message snapshot for dashboard context
   const messageSnapshot = history.slice(-10).map(m => ({
     sender:    m.role === 'user' ? 'customer' : 'bot',
     text:      m.content,
     timestamp: Date.now(),
   }));
 
-  // Push new session to agent's dashboard via Socket.IO
   appEvents.emit('session:new', {
     session,
     agentId:   agent.id,
@@ -203,13 +179,12 @@ export async function assignToAgent(phone, name, text, result, logMsg, history =
 export async function fallbackIfBusy(phone, name, category, sentiment = "neutral") {
   const priority = sentiment === "frustrated" ? 1 : 0;
 
-  enqueue(phone, name, category, { priority });
-  setState(phone, "escalated");
+  await enqueue(phone, name, category, { priority });
+  await setState(phone, "escalated");
 
-  // Create a waiting session so it appears in admin/agent dashboard
-  const existing = getSessionByPhone(phone);
+  const existing = await getSessionByPhone(phone);
   if (!existing) {
-    const session = createSession({ customerPhone: phone, customerName: name, category, priority });
+    const session = await createSession({ customerPhone: phone, customerName: name, category, priority });
     appEvents.emit('queue:update', { action: 'enqueued', session });
   }
 
@@ -232,11 +207,11 @@ export async function fallbackIfBusy(phone, name, category, sentiment = "neutral
 
 // ─── Step 6 — Auto-dequeue ────────────────────────────────────────────────────
 export async function processNextInQueue(logMsg) {
-  const fullQueue = getQueue();
+  const fullQueue = await getQueue();
   const nextEntry = fullQueue.find((entry) => selectAgent(entry.category) !== null);
   if (!nextEntry) return null;
 
-  dequeue(nextEntry.phone);
+  await dequeue(nextEntry.phone);
   console.log(`📋 Auto-dequeuing: ${nextEntry.phone} (${nextEntry.category})`);
   logEvent({
     type:      EVENT_TYPES.DEQUEUED,
@@ -246,7 +221,7 @@ export async function processNextInQueue(logMsg) {
     meta:      { waitMs: Date.now() - nextEntry.enqueuedAt, retryCount: nextEntry.retryCount },
   });
 
-  const history = getHistory(nextEntry.phone);
+  const history = await getHistory(nextEntry.phone);
   const lastMsg = [...history].reverse().find((m) => m.role === "user");
 
   await orchestrate(
@@ -271,12 +246,13 @@ export async function processNextInQueue(logMsg) {
 // ─── AI Fallback for long-waiting queue customers ─────────────────────────────
 setInterval(async () => {
   const now = Date.now();
-  const longWaiters = getQueue().filter(
+  const queue = await getQueue().catch(() => []);
+  const longWaiters = queue.filter(
     (e) => (now - e.enqueuedAt) > MAX_QUEUE_WAIT_MS && !e._aiFallbackSent
   );
 
   for (const entry of longWaiters) {
-    updateQueueEntry(entry.phone, { _aiFallbackSent: true });
+    await updateQueueEntry(entry.phone, { _aiFallbackSent: true });
     const fallbackMsg =
       `Hi ${entry.name.split(" ")[0]}! We apologize for the wait. ` +
       `All our ${entry.category} specialists are still busy but you're next in line.\n\n` +

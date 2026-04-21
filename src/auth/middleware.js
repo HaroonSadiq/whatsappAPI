@@ -17,14 +17,14 @@ export function verifyToken(token) {
 
 // ─── Express middleware ───────────────────────────────────────────────────────
 
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const auth = req.headers.authorization;
   if (!auth?.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   try {
     const payload = verifyToken(auth.slice(7));
-    const user    = findById(payload.userId);
+    const user    = await findById(payload.userId);
     if (!user?.enabled) return res.status(401).json({ error: 'Unauthorized' });
     req.user = { ...payload, ...user };
     next();
@@ -33,15 +33,15 @@ export function requireAuth(req, res, next) {
   }
 }
 
-export function requireAdmin(req, res, next) {
-  requireAuth(req, res, () => {
+export async function requireAdmin(req, res, next) {
+  await requireAuth(req, res, () => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     next();
   });
 }
 
-export function requireAgent(req, res, next) {
-  requireAuth(req, res, () => {
+export async function requireAgent(req, res, next) {
+  await requireAuth(req, res, () => {
     if (req.user.role !== 'agent' && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Agents only' });
     }

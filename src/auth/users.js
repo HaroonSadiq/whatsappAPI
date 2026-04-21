@@ -1,28 +1,17 @@
-import bcrypt      from 'bcryptjs';
-import { randomUUID } from 'crypto';
-import { db }       from '../db.js';
-
 /**
- * SQLite-backed user store.
- * Schema: { id, username, passwordHash, role: 'admin'|'agent', agentId, enabled, createdAt }
+ * auth/users.js
+ * Async user store backed by LibSQL (Turso).
  *
- * Seeded with one admin account (admin / admin123) on first run.
+ * Call initUsers() once at startup — it seeds the default admin account
+ * (admin / admin123) if the table is empty.
  */
 
-// Seed default admin if the table is empty
-const existing = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
-if (!existing) {
-  db.prepare(`
-    INSERT INTO users (id, username, password_hash, role, agent_id, enabled, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    randomUUID(), 'admin',
-    bcrypt.hashSync('admin123', 10),
-    'admin', null, 1, new Date().toISOString(),
-  );
-}
+import bcrypt      from 'bcryptjs';
+import { randomUUID } from 'crypto';
+import { db }      from '../db.js';
 
 // ─── Row mapper ───────────────────────────────────────────────────────────────
+
 function toUser(row) {
   if (!row) return null;
   return {
@@ -31,62 +20,110 @@ function toUser(row) {
     passwordHash: row.password_hash,
     role:         row.role,
     agentId:      row.agent_id,
-    enabled:      row.enabled === 1,
+    enabled:      Number(row.enabled) === 1,
     createdAt:    row.created_at,
   };
 }
 
+function sanitize({ passwordHash, ...rest }) {
+  return rest;
+}
+
+// ─── Startup seed ─────────────────────────────────────────────────────────────
+
+/**
+ * initUsers — seeds the default admin user if no users exist yet.
+ * Must be awaited before the server starts accepting requests.
+ */
+export async function initUsers() {
+  const existing = await findByUsername('admin');
+  if (!existing) {
+    await db.execute({
+      sql: `INSERT INTO users (id, username, password_hash, role, agent_id, enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        randomUUID(), 'admin',
+        bcrypt.hashSync('admin123', 10),
+        'admin', null, 1, new Date().toISOString(),
+      ],
+    });
+    console.log('[Users] Default admin seeded (admin / admin123)');
+  }
+}
+
 // ─── Queries ──────────────────────────────────────────────────────────────────
-export function findByUsername(username) {
-  return toUser(db.prepare('SELECT * FROM users WHERE username = ?').get(username));
+
+export async function findByUsername(username) {
+  const result = await db.execute({
+    sql: 'SELECT * FROM users WHERE username = ?',
+    args: [username],
+  });
+  return toUser(result.rows[0] ?? null);
 }
 
-export function findById(id) {
-  return toUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
+export async function findById(id) {
+  const result = await db.execute({
+    sql: 'SELECT * FROM users WHERE id = ?',
+    args: [id],
+  });
+  return toUser(result.rows[0] ?? null);
 }
 
-export function getAllUsers() {
-  return db.prepare('SELECT * FROM users').all().map(toUser).map(sanitize);
+export async function getAllUsers() {
+  const result = await db.execute('SELECT * FROM users');
+  return result.rows.map(toUser).map(sanitize);
 }
 
 // ─── Mutations ────────────────────────────────────────────────────────────────
-export function createUser({ username, password, role, agentId = null }) {
-  if (findByUsername(username)) throw new Error('Username already exists');
+
+export async function createUser({ username, password, role, agentId = null }) {
+  if (await findByUsername(username)) throw new Error('Username already exists');
   const id = randomUUID();
-  db.prepare(`
-    INSERT INTO users (id, username, password_hash, role, agent_id, enabled, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(id, username, bcrypt.hashSync(password, 10), role, agentId, 1, new Date().toISOString());
-  return sanitize(findById(id));
+  await db.execute({
+    sql: `INSERT INTO users (id, username, password_hash, role, agent_id, enabled, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [id, username, bcrypt.hashSync(password, 10), role, agentId, 1, new Date().toISOString()],
+  });
+  return sanitize(await findById(id));
 }
 
-export function updateUser(id, updates) {
-  if (!findById(id)) return null;
+export async function updateUser(id, updates) {
+  if (!(await findById(id))) return null;
   if (updates.password !== undefined) {
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
-      .run(bcrypt.hashSync(updates.password, 10), id);
+    await db.execute({
+      sql: 'UPDATE users SET password_hash = ? WHERE id = ?',
+      args: [bcrypt.hashSync(updates.password, 10), id],
+    });
   }
   if (updates.enabled !== undefined) {
-    db.prepare('UPDATE users SET enabled = ? WHERE id = ?')
-      .run(updates.enabled ? 1 : 0, id);
+    await db.execute({
+      sql: 'UPDATE users SET enabled = ? WHERE id = ?',
+      args: [updates.enabled ? 1 : 0, id],
+    });
   }
   if (updates.role !== undefined) {
-    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(updates.role, id);
+    await db.execute({
+      sql: 'UPDATE users SET role = ? WHERE id = ?',
+      args: [updates.role, id],
+    });
   }
   if (updates.agentId !== undefined) {
-    db.prepare('UPDATE users SET agent_id = ? WHERE id = ?').run(updates.agentId, id);
+    await db.execute({
+      sql: 'UPDATE users SET agent_id = ? WHERE id = ?',
+      args: [updates.agentId, id],
+    });
   }
-  return sanitize(findById(id));
+  return sanitize(await findById(id));
 }
 
-export function deleteUser(id) {
-  return db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
+export async function deleteUser(id) {
+  const result = await db.execute({
+    sql: 'DELETE FROM users WHERE id = ?',
+    args: [id],
+  });
+  return result.rowsAffected > 0;
 }
 
 export function verifyPassword(user, password) {
   return bcrypt.compareSync(password, user.passwordHash);
-}
-
-function sanitize({ passwordHash, ...rest }) {
-  return rest;
 }

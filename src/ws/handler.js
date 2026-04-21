@@ -54,10 +54,10 @@ export function initWsHandler(io, logMsg) {
   io.on('connection', (socket) => {
 
     // ── authenticate ─────────────────────────────────────────────────────────
-    socket.on('authenticate', (token, cb) => {
+    socket.on('authenticate', async (token, cb) => {
       try {
         const payload = verifyToken(token);
-        const user    = findById(payload.userId);
+        const user    = await findById(payload.userId);
         if (!user?.enabled) {
           cb?.({ error: 'Unauthorized' });
           return socket.disconnect();
@@ -77,16 +77,18 @@ export function initWsHandler(io, logMsg) {
           socket.join('admin');
         }
 
-        // Send initial data snapshot
+        const sessions = await getAllSessions();
+
         cb?.({
           ok: true,
           user: { id: user.id, username: user.username, role: user.role, agentId: user.agentId },
-          sessions: getAllSessions(),
-          agents:   getAvailabilitySnapshot(),
+          sessions,
+          agents: getAvailabilitySnapshot(),
         });
 
         console.log(`[WS] ${user.role} "${user.username}" connected (${socket.id})`);
-      } catch {
+      } catch (err) {
+        console.error('[WS] authenticate error:', err.message);
         cb?.({ error: 'Invalid token' });
         socket.disconnect();
       }
@@ -97,21 +99,20 @@ export function initWsHandler(io, logMsg) {
       const meta = socketMeta.get(socket.id);
       if (!meta?.agentId) return cb?.({ error: 'Not an agent' });
 
-      const session = getSession(sessionId);
+      const session = await getSession(sessionId);
       if (!session) return cb?.({ error: 'Session not found' });
       if (session.state !== 'waiting') return cb?.({ error: 'Session not waiting' });
       if (session.assignedAgentId && session.assignedAgentId !== meta.agentId) {
         return cb?.({ error: 'Session assigned to different agent' });
       }
 
-      const activated = assignSession(sessionId, meta.agentId);
+      const activated = await assignSession(sessionId, meta.agentId);
       if (!activated) return cb?.({ error: 'Could not activate session' });
 
-      // Send acceptance message to customer
       const acceptMsg = `Hi! I'm ${session.agentName || 'your support agent'}. I'm here to help. 😊`;
       try {
         await sendMessage(session.customerPhone, acceptMsg);
-        addToHistory(session.customerPhone, 'assistant', acceptMsg);
+        await addToHistory(session.customerPhone, 'assistant', acceptMsg);
         _logMsg('outbound', session.customerPhone, session.agentName || 'Agent', acceptMsg, {
           type: 'agent_message', agentId: meta.agentId,
         });
@@ -119,7 +120,8 @@ export function initWsHandler(io, logMsg) {
         console.error('[WS] Failed to send acceptance message:', err.message);
       }
 
-      const messages = getHistory(session.customerPhone).map(m => ({
+      const history = await getHistory(session.customerPhone);
+      const messages = history.map(m => ({
         sender:    m.role === 'user' ? 'customer' : (m.role === 'assistant' ? 'agent' : 'bot'),
         text:      m.content,
         timestamp: Date.now(),
@@ -127,7 +129,6 @@ export function initWsHandler(io, logMsg) {
 
       cb?.({ ok: true, session: activated, messages });
 
-      // Broadcast update
       io.to('admin').emit('session:activated', { session: activated });
       logEvent({ type: EVENT_TYPES.ASSIGNED, customerId: session.customerPhone, agentId: meta.agentId, status: 'success' });
     });
@@ -137,7 +138,7 @@ export function initWsHandler(io, logMsg) {
       const meta = socketMeta.get(socket.id);
       if (!meta) return cb?.({ error: 'Not authenticated' });
 
-      const session = getSession(sessionId);
+      const session = await getSession(sessionId);
       if (!session) return cb?.({ error: 'Session not found' });
       if (session.state !== 'active') return cb?.({ error: 'Session not active' });
       if (session.agentId !== meta.agentId && meta.role !== 'admin') {
@@ -147,14 +148,13 @@ export function initWsHandler(io, logMsg) {
 
       const trimmed = text.trim();
 
-      // Send via WhatsApp to customer
       try {
         await sendMessage(session.customerPhone, trimmed);
       } catch (err) {
         return cb?.({ error: `WhatsApp send failed: ${err.message}` });
       }
 
-      addToHistory(session.customerPhone, 'assistant', trimmed);
+      await addToHistory(session.customerPhone, 'assistant', trimmed);
       _logMsg('outbound', session.customerPhone, session.agentName || 'Agent', trimmed, {
         type: 'agent_message', agentId: meta.agentId, sessionId,
       });
@@ -177,7 +177,6 @@ export function initWsHandler(io, logMsg) {
 
       cb?.({ ok: true, message });
 
-      // Echo to admin and other agent tabs
       io.to('admin').emit('session:message', { sessionId, session, message });
       io.to(`agent:${meta.agentId}`).emit('session:message', { sessionId, session, message });
     });
@@ -187,19 +186,18 @@ export function initWsHandler(io, logMsg) {
       const meta = socketMeta.get(socket.id);
       if (!meta) return cb?.({ error: 'Not authenticated' });
 
-      const session = getSession(sessionId);
+      const session = await getSession(sessionId);
       if (!session) return cb?.({ error: 'Session not found' });
       if (session.agentId !== meta.agentId && meta.role !== 'admin') {
         return cb?.({ error: 'Not your session' });
       }
 
-      const closed = closeSession(sessionId);
+      const closed = await closeSession(sessionId);
       if (!closed) return cb?.({ error: 'Could not close session' });
 
-      // Release agent capacity
       if (session.agentId) releaseConversation(session.agentId);
-      releaseAssignment(session.customerPhone);
-      setState(session.customerPhone, 'awaiting_rating');
+      await releaseAssignment(session.customerPhone);
+      await setState(session.customerPhone, 'awaiting_rating');
 
       const ratingMsg =
         `Your query has been resolved. Thank you for reaching out! 🙏\n\n` +
@@ -224,7 +222,6 @@ export function initWsHandler(io, logMsg) {
       io.to('admin').emit('session:closed', { sessionId, session: closed });
       io.to(`agent:${meta.agentId}`).emit('session:closed', { sessionId, session: closed });
 
-      // Auto-dequeue next waiting customer
       await processNextInQueue(_logMsg).catch(() => {});
     });
 
@@ -265,7 +262,6 @@ export function initWsHandler(io, logMsg) {
 
   // ─── AppEvent relays ──────────────────────────────────────────────────────
 
-  // New session created by orchestrator → push to assigned agent + admin
   appEvents.on('session:new', ({ session, agentId, messages }) => {
     _io.to('admin').emit('session:new', { session, messages });
     if (agentId) {
@@ -273,7 +269,6 @@ export function initWsHandler(io, logMsg) {
     }
   });
 
-  // Customer sent a message while in escalated state → push to agent
   appEvents.on('session:customer:message', ({ session, message }) => {
     _io.to('admin').emit('session:message', { sessionId: session.id, session, message });
     if (session.agentId) {
@@ -281,7 +276,6 @@ export function initWsHandler(io, logMsg) {
     }
   });
 
-  // Queue changed
   appEvents.on('queue:update', (data) => {
     _io.to('admin').emit('queue:update', data);
     _io.to('all').emit('queue:update', data);
@@ -289,8 +283,8 @@ export function initWsHandler(io, logMsg) {
 }
 
 /** Push a customer's inbound message to the assigned agent's dashboard. */
-export function pushCustomerMessage(phone, name, text) {
-  const session = getSessionByPhone(phone);
+export async function pushCustomerMessage(phone, name, text) {
+  const session = await getSessionByPhone(phone);
   if (!session || !_io) return;
 
   const message = {
