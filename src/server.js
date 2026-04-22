@@ -496,6 +496,43 @@ app.get("/api/sessions/mine", requireAgent, async (req, res) => {
   res.json(sessions);
 });
 
+/** POST /api/sessions/:id/accept — agent accepts a waiting session (polling fallback) */
+app.post("/api/sessions/:id/accept", requireAgent, async (req, res) => {
+  const session = await getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: "Session not found" });
+  if (session.state !== 'waiting') return res.status(409).json({ error: "Session not waiting" });
+  if (session.assignedAgentId && session.assignedAgentId !== req.user.agentId) {
+    return res.status(403).json({ error: "Session assigned to a different agent" });
+  }
+
+  const activated = await assignSession(session.id, req.user.agentId);
+  if (!activated) return res.status(409).json({ error: "Could not activate session" });
+
+  // Send welcome message to customer
+  const acceptMsg = `Hi! I'm ${session.agentName || 'your support agent'}. I'm here to help. 😊`;
+  try {
+    await sendMessage(session.customerPhone, acceptMsg);
+    await addToHistory(session.customerPhone, 'assistant', acceptMsg);
+    logMsg('outbound', session.customerPhone, session.agentName || 'Agent', acceptMsg, {
+      type: 'agent_message', agentId: req.user.agentId,
+    });
+  } catch (err) {
+    console.error('[API] Failed to send acceptance message:', err.message);
+  }
+
+  const history = await getHistory(session.customerPhone);
+  const messages = history.map(m => ({
+    sender:    m.role === 'user' ? 'customer' : (m.role === 'assistant' ? 'agent' : 'bot'),
+    text:      m.content,
+    timestamp: Date.now(),
+  }));
+
+  io.to('admin').emit('session:activated', { session: activated });
+  logEvent({ type: EVENT_TYPES.ASSIGNED, customerId: session.customerPhone, agentId: req.user.agentId, status: 'success' });
+
+  res.json({ ok: true, session: activated, messages });
+});
+
 /** GET /api/sessions/:id/history */
 app.get("/api/sessions/:id/history", requireAuth, async (req, res) => {
   const sessions = await getAllSessions();
@@ -531,12 +568,17 @@ app.post("/agent-done", requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-/** POST /api/set-agent-status */
-app.post("/api/set-agent-status", requireAdmin, async (req, res) => {
+/** POST /api/set-agent-status — agents can toggle their own status; admins can toggle anyone */
+app.post("/api/set-agent-status", requireAgent, async (req, res) => {
   const { agentId, status } = req.body;
   const validStates = Object.values(AGENT_STATES);
   if (!agentId || !validStates.includes(status)) {
     return res.status(400).json({ error: `agentId and status (${validStates.join("|")}) required` });
+  }
+
+  // Agents can only change their own status; admins can change anyone's
+  if (req.user.role === 'agent' && agentId !== req.user.agentId) {
+    return res.status(403).json({ error: "You can only change your own status" });
   }
 
   const ok = status === AGENT_STATES.AVAILABLE ? await resetAgent(agentId) : await setAgentStatus(agentId, status);
@@ -579,13 +621,14 @@ app.post("/api/assign", requireAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-/** POST /api/send — manual message from dashboard */
+/** POST /api/send — manual message from dashboard or agent */
 app.post("/api/send", requireAuth, async (req, res) => {
   const { phone, message } = req.body;
   if (!phone || !message) return res.status(400).json({ error: "phone and message required" });
   try {
     await sendMessage(phone.replace("+", ""), message);
-    logMsg("outbound", phone.replace("+", ""), "Admin", message, { type: "manual" });
+    const senderName = req.user.role === 'agent' ? (req.user.username || 'Agent') : 'Admin';
+    logMsg("outbound", phone.replace("+", ""), senderName, message, { type: "manual", agentId: req.user.agentId || null });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -567,6 +567,7 @@ const LOG_ICON  = { message_in:'📩',message_out:'📤',classified:'🤖',assig
 
 // ── State ──────────────────────────────────────────────────────────────────────
 let _logs = [];
+let _users = []; // cached users for optimistic updates
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function el(id)    { return document.getElementById(id); }
@@ -1101,44 +1102,83 @@ function renderLogs() {
 }
 
 // ── USER MANAGEMENT ───────────────────────────────────────────────────────────
+function renderUsersTable() {
+  const tbody = el('users-table');
+  if (!_users.length) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No users</td></tr>'; return; }
+  tbody.innerHTML = _users.map(u => `
+    <tr data-user-id="${esc(u.id)}">
+      <td style="font-weight:600">${esc(u.username)}</td>
+      <td><span style="padding:2px 9px;border-radius:10px;font-size:.7rem;font-weight:700;background:${u.role==='admin'?'rgba(255,92,92,.15)':'rgba(37,211,102,.12)'};color:${u.role==='admin'?'var(--red)':'var(--green)'}">${u.role}</span></td>
+      <td style="color:var(--muted);font-size:.78rem">${u.agentId||'—'}</td>
+      <td><span style="padding:2px 9px;border-radius:10px;font-size:.7rem;font-weight:700;background:${u.enabled?'rgba(37,211,102,.1)':'rgba(124,131,168,.1)'};color:${u.enabled?'var(--green)':'var(--muted)'}">${u.enabled?'Enabled':'Disabled'}</span></td>
+      <td style="color:var(--muted);font-size:.76rem">${new Date(u.createdAt).toLocaleDateString()}</td>
+      <td>
+        <div style="display:flex;gap:5px">
+          <button class="btn btn-muted" style="padding:3px 9px;font-size:.7rem" onclick="toggleUser('${u.id}',${u.enabled})">${u.enabled?'Disable':'Enable'}</button>
+          ${u.username!=='admin'?`<button class="btn" style="padding:3px 9px;font-size:.7rem;background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.3)" onclick="removeUser('${u.id}','${esc(u.username)}')">Remove</button>`:''}
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
 async function loadUsers() {
   try {
-    const users = await apiFetch('/api/auth/users');
-    const tbody = el('users-table');
-    if (!users.length) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No users</td></tr>'; return; }
-    tbody.innerHTML = users.map(u => `
-      <tr>
-        <td style="font-weight:600">${esc(u.username)}</td>
-        <td><span style="padding:2px 9px;border-radius:10px;font-size:.7rem;font-weight:700;background:${u.role==='admin'?'rgba(255,92,92,.15)':'rgba(37,211,102,.12)'};color:${u.role==='admin'?'var(--red)':'var(--green)'}">${u.role}</span></td>
-        <td style="color:var(--muted);font-size:.78rem">${u.agentId||'—'}</td>
-        <td><span style="padding:2px 9px;border-radius:10px;font-size:.7rem;font-weight:700;background:${u.enabled?'rgba(37,211,102,.1)':'rgba(124,131,168,.1)'};color:${u.enabled?'var(--green)':'var(--muted)'}">${u.enabled?'Enabled':'Disabled'}</span></td>
-        <td style="color:var(--muted);font-size:.76rem">${new Date(u.createdAt).toLocaleDateString()}</td>
-        <td>
-          <div style="display:flex;gap:5px">
-            <button class="btn btn-muted" style="padding:3px 9px;font-size:.7rem" onclick="toggleUser('${u.id}',${u.enabled})">${u.enabled?'Disable':'Enable'}</button>
-            ${u.username!=='admin'?`<button class="btn" style="padding:3px 9px;font-size:.7rem;background:rgba(255,92,92,.15);color:var(--red);border:1px solid rgba(255,92,92,.3)" onclick="removeUser('${u.id}','${esc(u.username)}')">Remove</button>`:''}
-          </div>
-        </td>
-      </tr>`).join('');
+    _users = await apiFetch('/api/auth/users');
+    renderUsersTable();
   } catch(e) { toast('Failed to load users: ' + e.message, true); }
 }
 
 async function addAgent() {
-  const name    = el('nu-name').value.trim();
+  const name     = el('nu-name').value.trim();
   const username = el('nu-username').value.trim();
-  const pass    = el('nu-pass').value;
-  const cat     = el('nu-cat').value;
-  const maxc    = parseInt(el('nu-maxc').value) || 3;
-  const phone   = el('nu-phone').value.trim();
-  const status  = el('nu-status');
+  const pass     = el('nu-pass').value;
+  const cat      = el('nu-cat').value;
+  const maxc     = parseInt(el('nu-maxc').value) || 3;
+  const phone    = el('nu-phone').value.trim();
+  const status   = el('nu-status');
   if (!name || !username || !pass) { toast('Name, username and password required', true); return; }
   try {
     status.textContent = 'Creating…';
-    await apiPost('/api/auth/users', { username, password: pass, role: 'agent', name, category: cat, maxConversations: maxc, phone });
+    const res = await apiPost('/api/auth/users', { username, password: pass, role: 'agent', name, category: cat, maxConversations: maxc, phone });
+
+    // Optimistically add to users table immediately
+    const newUser = res.user || { id: res.agentId || 'temp', username, role: 'agent', agentId: res.agentId || null, enabled: true, createdAt: new Date().toISOString() };
+    _users.push(newUser);
+    renderUsersTable();
+
+    // Optimistically add agent card to grid (will be replaced by loadAll)
+    const grid = el('agent-grid');
+    if (grid.querySelector('.empty')) grid.innerHTML = '';
+    const c = catColor(cat);
+    const lbl = document.createElement('div');
+    lbl.className = 'agent-section-lbl';
+    lbl.style.cssText = `color:${c};border-bottom:1px solid ${c}44`;
+    lbl.textContent = cat.toUpperCase();
+    // Only add label if not already present
+    const existingLbl = Array.from(grid.children).find(ch => ch.textContent === cat.toUpperCase());
+    if (!existingLbl) grid.appendChild(lbl);
+
+    const card = document.createElement('div');
+    card.className = 'agent-card';
+    card.style.borderColor = 'var(--green)';
+    card.innerHTML = `
+      <div class="avatar">${initials(name)}</div>
+      <div class="agent-info">
+        <div class="agent-name">${esc(name)} <span style="color:var(--green);font-size:.7rem">(new)</span></div>
+        <div class="agent-cat">${esc(cat)} · ${esc(res.agentId || username)}</div>
+        <div class="load-row"><span>Load</span><span style="color:var(--green)">0/${maxc}</span></div>
+        <div class="load-bar"><div class="load-fill" style="width:0%;background:var(--green)"></div></div>
+      </div>
+      <div class="dot dot-available"></div>`;
+    grid.appendChild(card);
+
     toast(`Agent "${name}" created ✓`);
     status.textContent = '';
     el('nu-name').value = el('nu-username').value = el('nu-pass').value = el('nu-phone').value = '';
-    loadUsers(); loadAll();
+
+    // Sync with server in background
+    await loadUsers();
+    await loadAll();
   } catch(e) { toast(e.message, true); status.textContent = ''; }
 }
 
@@ -1149,11 +1189,19 @@ async function addAdmin() {
   if (!username || !pass) { toast('Username and password required', true); return; }
   try {
     status.textContent = 'Creating…';
-    await apiPost('/api/auth/users', { username, password: pass, role: 'admin' });
+    const res = await apiPost('/api/auth/users', { username, password: pass, role: 'admin' });
+
+    // Optimistically add to users table immediately
+    const newUser = res.user || { id: 'temp', username, role: 'admin', agentId: null, enabled: true, createdAt: new Date().toISOString() };
+    _users.push(newUser);
+    renderUsersTable();
+
     toast(`Admin "${username}" created ✓`);
     status.textContent = '';
     el('na-username').value = el('na-pass').value = '';
-    loadUsers();
+
+    // Sync with server in background
+    await loadUsers();
   } catch(e) { toast(e.message, true); status.textContent = ''; }
 }
 

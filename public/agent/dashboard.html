@@ -240,7 +240,11 @@
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 const token = localStorage.getItem('wa_token');
 const me    = JSON.parse(localStorage.getItem('wa_user') || 'null');
-if (!token || !me) window.location.href = '/login';
+if (!token || !me || !me.agentId) {
+  localStorage.removeItem('wa_token');
+  localStorage.removeItem('wa_user');
+  window.location.href = '/login';
+}
 
 function logout() {
   localStorage.removeItem('wa_token');
@@ -289,9 +293,16 @@ function connect() {
       if (res.error) { alert('Auth failed: ' + res.error); logout(); return; }
       setBadge('socket');
       usePolling = false;
-      document.getElementById('agent-name-label').textContent = res.user.username;
+      if (res.user) {
+        document.getElementById('agent-name-label').textContent = res.user.username;
+        // Update stored user if agentId was missing
+        if (res.user.agentId && !me.agentId) {
+          me.agentId = res.user.agentId;
+          localStorage.setItem('wa_user', JSON.stringify(me));
+        }
+      }
       (res.sessions || []).forEach(s => {
-        if (s.agentId === me.agentId || s.state === 'waiting') {
+        if (s.agentId === me.agentId || s.assignedAgentId === me.agentId || s.state === 'waiting') {
           sessions[s.id] = s;
           messages[s.id] = messages[s.id] || [];
         }
