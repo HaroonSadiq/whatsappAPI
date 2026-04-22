@@ -31,6 +31,12 @@ function sanitize({ passwordHash, ...rest }) {
 
 // ─── Startup seed ─────────────────────────────────────────────────────────────
 
+// Fixed UUID for the built-in admin account.
+// Must be stable across cold starts and serverless instances so that JWTs
+// issued by one instance remain valid when a different instance handles the
+// next request (Vercel ephemeral /tmp scenario).
+const ADMIN_ID = '00000000-admin-0000-0000-000000000001';
+
 /**
  * initUsers — seeds the default admin user if no users exist yet.
  * Must be awaited before the server starts accepting requests.
@@ -42,7 +48,7 @@ export async function initUsers() {
       sql: `INSERT INTO users (id, username, password_hash, role, agent_id, enabled, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)`,
       args: [
-        randomUUID(), 'admin',
+        ADMIN_ID, 'admin',
         bcrypt.hashSync('admin123', 10),
         'admin', null, 1, new Date().toISOString(),
       ],

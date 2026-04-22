@@ -17,8 +17,11 @@ if (!process.env.TURSO_DATABASE_URL) {
   console.warn("[DB] TURSO_DATABASE_URL not set — using local file DB (data/support.db)");
 }
 
+// On Vercel the project root is read-only; /tmp is the only writable path.
+const _localPath = process.env.VERCEL ? "/tmp/support.db" : "data/support.db";
+
 export const db = createClient({
-  url:       process.env.TURSO_DATABASE_URL || "file:data/support.db",
+  url:       process.env.TURSO_DATABASE_URL || `file:${_localPath}`,
   authToken: process.env.TURSO_AUTH_TOKEN,
 });
 

@@ -22,14 +22,24 @@ export async function requireAuth(req, res, next) {
   if (!auth?.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+
+  // Step 1 — verify JWT signature/expiry (auth failure → 401)
+  let payload;
   try {
-    const payload = verifyToken(auth.slice(7));
-    const user    = await findById(payload.userId);
+    payload = verifyToken(auth.slice(7));
+  } catch {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+
+  // Step 2 — load user from DB (server failure → 500, not 401)
+  try {
+    const user = await findById(payload.userId);
     if (!user?.enabled) return res.status(401).json({ error: 'Unauthorized' });
     req.user = { ...payload, ...user };
     next();
-  } catch {
-    res.status(401).json({ error: 'Invalid token' });
+  } catch (err) {
+    console.error('[Auth] requireAuth DB error:', err.message);
+    return res.status(500).json({ error: 'Server error — please try again' });
   }
 }
 
