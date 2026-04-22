@@ -189,6 +189,51 @@
 
     /* Skills */
     .skill-tag { display:inline-block; padding:1px 7px; border-radius:10px; font-size:.63rem; margin:1px; }
+
+    /* ── Mobile / Tablet Responsiveness ─────────────────────────────────────── */
+    @media(max-width:768px){
+      body { font-size:13px; }
+      nav { padding:0 12px; height:auto; min-height:52px; flex-wrap:wrap; gap:6px; }
+      .nav-brand { font-size:.9rem; }
+      .nav-brand svg { width:24px; height:24px; }
+      .nav-right { gap:8px; font-size:.7rem; flex-wrap:wrap; }
+      .tabs { padding:10px 12px 0; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+      .tab { padding:6px 12px; font-size:.75rem; white-space:nowrap; }
+      .wrap { padding:0 12px 20px; }
+      .stats { grid-template-columns:repeat(2,1fr); gap:8px; }
+      .stat { padding:12px 14px; }
+      .stat-value { font-size:1.4rem; }
+      .cat-cards { grid-template-columns:1fr; }
+      .agent-grid { grid-template-columns:1fr; padding:10px; }
+      .agent-card { padding:10px 12px; }
+      .avatar { width:34px; height:34px; font-size:.8rem; }
+      .q-item { flex-direction:column; align-items:flex-start; gap:6px; padding:10px 12px; }
+      .q-wait { align-self:flex-end; }
+      .form-row { flex-direction:column; }
+      .form-grp { min-width:auto; }
+      .btn { padding:8px 14px; font-size:.85rem; min-height:44px; }
+      .action-panel { padding:14px; }
+      .refresh-bar { flex-direction:column; align-items:flex-start; gap:6px; }
+      table { font-size:.78rem; }
+      th, td { padding:7px 10px; }
+      .scroll-panel { max-height:320px; }
+      #toasts { left:12px; right:12px; bottom:12px; }
+      .toast { max-width:none; }
+      .pill { padding:4px 10px; min-height:32px; display:inline-flex; align-items:center; }
+    }
+    @media(max-width:480px){
+      .stats { grid-template-columns:1fr 1fr; }
+      .nav-right #clock, .nav-right #admin-name { display:none; }
+    }
+    /* Touch-friendly */
+    @media(pointer:coarse){
+      .agent-card, .q-item, .session-card, .btn, .pill, .tab, input, select, textarea {
+        min-height:44px;
+      }
+      .toggle { width:44px; height:26px; }
+      .toggle::after { width:20px; height:20px; top:3px; left:3px; }
+      .toggle.on::after { transform:translateX(18px); }
+    }
   </style>
 </head>
 <body>

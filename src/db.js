@@ -136,6 +136,8 @@ export async function initDb() {
       current_chat_start    INTEGER,
       cooldown_until        INTEGER,
       last_active_at        INTEGER,
+      chat_count            INTEGER DEFAULT 0,
+      total_response_ms     INTEGER DEFAULT 0,
       updated_at            INTEGER NOT NULL
     )`,
 
@@ -171,6 +173,10 @@ export async function initDb() {
   for (const sql of ddl) {
     await db.execute(sql);
   }
+
+  // ── Schema migrations for existing databases ──────────────────────────────
+  await db.execute("ALTER TABLE agent_runtime ADD COLUMN chat_count INTEGER DEFAULT 0").catch(() => {});
+  await db.execute("ALTER TABLE agent_runtime ADD COLUMN total_response_ms INTEGER DEFAULT 0").catch(() => {});
 
   console.log("[DB] Schema ready");
 }

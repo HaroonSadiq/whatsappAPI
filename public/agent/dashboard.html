@@ -120,6 +120,43 @@
     ::-webkit-scrollbar { width: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    /* ── Mobile / Tablet Responsiveness ─────────────────────────────────────── */
+    @media(max-width:768px){
+      body { font-size:13px; }
+      nav { padding:0 12px; height:48px; }
+      .nav-left { font-size:.85rem; gap:8px; }
+      .nav-left svg { width:18px; height:18px; }
+      .nav-right { gap:10px; font-size:.75rem; }
+      .agent-name { display:none; }
+      .layout { flex-direction:column; }
+      .sidebar { width:100%; height:35%; max-height:260px; border-right:none; border-bottom:1px solid var(--border); flex-shrink:0; }
+      .chat-area { height:65%; }
+      .session-card { padding:9px 12px; }
+      .sc-name { font-size:.8rem; }
+      .accept-btn { padding:5px; font-size:.7rem; min-height:40px; }
+      .chat-header { padding:10px 14px; }
+      .chat-customer-name { font-size:.85rem; }
+      .done-btn { padding:6px 12px; font-size:.75rem; min-height:40px; }
+      .messages { padding:12px 14px; }
+      .msg { max-width:85%; padding:8px 11px; font-size:.82rem; }
+      .composer { padding:10px 12px; }
+      textarea { padding:8px 10px; font-size:.85rem; min-height:40px; }
+      .send-btn { width:40px; height:40px; }
+    }
+    @media(max-width:480px){
+      .sidebar { height:30%; max-height:200px; }
+      .chat-area { height:70%; }
+      .status-toggle span { display:none; }
+    }
+    /* Touch-friendly */
+    @media(pointer:coarse){
+      .session-card, .accept-btn, .done-btn, .send-btn, textarea {
+        min-height:44px;
+      }
+      .send-btn { width:48px; height:48px; }
+      .send-btn svg { width:22px; height:22px; }
+    }
   </style>
 </head>
 <body>
