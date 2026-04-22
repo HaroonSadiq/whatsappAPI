@@ -2,6 +2,9 @@
  * ws/handler.js
  * Socket.IO connection handler — the real-time bridge between agents and customers.
  *
+ * Vercel note: Socket.IO works best with polling transport on serverless.
+ * For maximum reliability, the agent dashboard also supports REST polling as fallback.
+ *
  * Flow:
  *  1. Agent connects → authenticates with JWT → joins their personal room
  *  2. Orchestrator emits appEvents → handler pushes to correct Socket.IO room
@@ -26,7 +29,7 @@ import {
   saveRating,
 }                           from '../session.js';
 import {
-  setAgentStatus, releaseConversation,
+  setAgentStatus, releaseConversation, getAgentById,
   AGENT_STATES, getAvailabilitySnapshot,
 }                           from '../agents.js';
 import {
@@ -83,7 +86,7 @@ export function initWsHandler(io, logMsg) {
           ok: true,
           user: { id: user.id, username: user.username, role: user.role, agentId: user.agentId },
           sessions,
-          agents: getAvailabilitySnapshot(),
+          agents: await getAvailabilitySnapshot(),
         });
 
         console.log(`[WS] ${user.role} "${user.username}" connected (${socket.id})`);
@@ -195,7 +198,7 @@ export function initWsHandler(io, logMsg) {
       const closed = await closeSession(sessionId);
       if (!closed) return cb?.({ error: 'Could not close session' });
 
-      if (session.agentId) releaseConversation(session.agentId);
+      if (session.agentId) await releaseConversation(session.agentId);
       await releaseAssignment(session.customerPhone);
       await setState(session.customerPhone, 'awaiting_rating');
 
@@ -226,13 +229,13 @@ export function initWsHandler(io, logMsg) {
     });
 
     // ── agent:status — agent toggles their availability ───────────────────────
-    socket.on('agent:status', ({ status }, cb) => {
+    socket.on('agent:status', async ({ status }, cb) => {
       const meta = socketMeta.get(socket.id);
       if (!meta?.agentId) return cb?.({ error: 'No agent linked' });
       const valid = Object.values(AGENT_STATES);
       if (!valid.includes(status)) return cb?.({ error: `Invalid status. Valid: ${valid.join(', ')}` });
 
-      const ok = setAgentStatus(meta.agentId, status);
+      const ok = await setAgentStatus(meta.agentId, status);
       cb?.({ ok });
       if (ok) {
         io.to('all').emit('agent:status', { agentId: meta.agentId, status });

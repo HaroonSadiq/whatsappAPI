@@ -3,7 +3,8 @@
  * Async session store backed by LibSQL (Turso).
  *
  * All exported functions are async — await them at call sites.
- * followUpTimers remain in-memory (setTimeout handles cannot be serialised).
+ * Follow-up timers have been moved to the DB (follow_up_schedule table)
+ * to survive Vercel cold starts.
  */
 
 import { db } from './db.js';
@@ -32,6 +33,7 @@ export async function clearSession(phone) {
   await db.execute({ sql: 'DELETE FROM conversation_states  WHERE phone = ?', args: [phone] });
   await db.execute({ sql: 'DELETE FROM contacts             WHERE phone = ?', args: [phone] });
   await db.execute({ sql: 'DELETE FROM session_meta         WHERE phone = ?', args: [phone] });
+  await db.execute({ sql: 'DELETE FROM follow_up_schedule   WHERE phone = ?', args: [phone] });
   // active_chats cleared separately via releaseAssignment
 }
 
@@ -263,15 +265,35 @@ export async function getRatings() {
   }));
 }
 
-// ─── Follow-up timers (in-memory only — setTimeout handles) ──────────────────
+// ─── Follow-up schedule (DB-backed, Vercel-safe) ─────────────────────────────
 
-const followUpTimers = new Map();
-
-export function setFollowUpTimer(phone, timerId) {
-  followUpTimers.set(phone, timerId);
+export async function scheduleFollowUp(phone, name, stage = 'nudge', delayMs = 5 * 60 * 1000) {
+  const scheduledAt = Date.now() + delayMs;
+  await db.execute({
+    sql: `INSERT INTO follow_up_schedule (phone, customer_name, stage, scheduled_at, created_at)
+          VALUES (@phone, @name, @stage, @scheduled, @now)
+          ON CONFLICT(phone) DO UPDATE SET
+            stage = excluded.stage,
+            scheduled_at = excluded.scheduled_at,
+            created_at = excluded.created_at`,
+    args: { phone, name, stage, scheduled: scheduledAt, now: Date.now() },
+  });
 }
 
-export function clearFollowUpTimer(phone) {
-  const id = followUpTimers.get(phone);
-  if (id) { clearTimeout(id); followUpTimers.delete(phone); }
+export async function clearFollowUpTimer(phone) {
+  await db.execute({ sql: 'DELETE FROM follow_up_schedule WHERE phone = ?', args: [phone] });
+}
+
+export async function getOverdueFollowUps() {
+  const result = await db.execute({
+    sql: 'SELECT * FROM follow_up_schedule WHERE scheduled_at <= ? ORDER BY scheduled_at ASC',
+    args: [Date.now()],
+  });
+  return result.rows.map(r => ({
+    phone: r.phone,
+    name: r.customer_name,
+    stage: r.stage,
+    scheduledAt: Number(r.scheduled_at),
+    createdAt: Number(r.created_at),
+  }));
 }

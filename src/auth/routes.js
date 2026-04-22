@@ -4,7 +4,7 @@ import {
   createUser, deleteUser, getAllUsers, updateUser,
 } from './users.js';
 import { generateToken, requireAdmin, requireAuth } from './middleware.js';
-import { createAgent, removeAgent, findAgent, agentRegistry } from '../agents.js';
+import { createAgent, removeAgent, findAgent } from '../agents.js';
 
 const router = Router();
 
@@ -66,9 +66,9 @@ router.post('/users', requireAdmin, async (req, res) => {
       if (!name || !category) {
         return res.status(400).json({ error: 'name and category required for agent role' });
       }
-      const agent = createAgent({
+      const agent = await createAgent({
         name,
-        number: phone || '',
+        phone: phone || '',
         category,
         skills: skills || ['general_support'],
         maxConcurrentConversations: maxConversations || 3,
@@ -99,7 +99,7 @@ router.delete('/users/:id', requireAdmin, async (req, res) => {
     const users  = await getAllUsers();
     const target = users.find(u => u.id === req.params.id);
     if (!target) return res.status(404).json({ error: 'User not found' });
-    if (target.agentId) removeAgent(target.agentId);
+    if (target.agentId) await removeAgent(target.agentId);
     await deleteUser(req.params.id);
     res.json({ ok: true });
   } catch (err) {

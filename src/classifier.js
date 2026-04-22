@@ -4,67 +4,12 @@
  */
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { PRODUCT_KB } from "./knowledge-base.js";
 
 if (!process.env.GEMINI_API_KEY) {
   console.warn("[Classifier] GEMINI_API_KEY is not set — AI classification will be unavailable.");
 }
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
-
-// ─── Product Knowledge Base ───────────────────────────────────────────────────
-const PRODUCT_KB = `
-=== ELECTRONICS ===
-iPhone 15 Pro:
-  - Price: PKR 299,000
-  - Delivery: 2–3 working days
-  - Warranty: 1 year Apple official
-  - Legitimacy: 100% original, authorized Apple reseller
-  - Durability: Titanium frame, Ceramic Shield glass, IP68 water-resistant
-
-Samsung QLED 55" TV:
-  - Price: PKR 185,000
-  - Delivery: 3–5 working days
-  - Warranty: 2 years Samsung
-  - Durability: QLED panel, rated 100,000+ hours
-
-HP ProBook Laptop 450 G10:
-  - Price: PKR 120,000
-  - Delivery: 1–2 working days
-  - Warranty: 1 year HP
-  - Legitimacy: Authorized HP partner reseller
-
-=== CLOTHING ===
-Linen Suit (Men):
-  - Price: PKR 8,500
-  - Delivery: 1–2 working days
-  - Material: 100% pure linen, machine washable 30°C
-  - Sizes: S / M / L / XL / XXL
-  - Durability: High-quality stitching, colour-fast
-
-Kurta Collection (Men/Women):
-  - Price: PKR 2,500–4,500
-  - Delivery: 1 working day (in-stock)
-  - Material: Cotton lawn / khaddar (seasonal)
-  - Sizes: S / M / L / XL / XXL
-
-=== APPLIANCES ===
-Haier Refrigerator 14 Cu Ft:
-  - Price: PKR 65,000
-  - Delivery: 3–5 working days (free + installation)
-  - Warranty: 5 years compressor, 1 year parts
-  - Durability: Frost-free, inverter compressor
-
-Dawlance AC 1.5 Ton Inverter:
-  - Price: PKR 89,000
-  - Delivery: 2–3 working days (free + installation)
-  - Warranty: 3 years compressor, 1 year parts/labour
-  - Energy: 5-star inverter
-
-=== POLICIES ===
-Returns: 7-day window, unused & original packaging. Defective: replacement in 3 working days.
-Legitimacy: Registered Pakistani business (NTN verified). All products official/authorized.
-Payment: COD nationwide | Bank transfer | JazzCash / Easypaisa / SadaPay
-Tracking: WhatsApp link sent after dispatch. Also via order number on website.
-`;
 
 const SYSTEM_PROMPT = `You are a warm, helpful, and relaxed sales guide for a Pakistani e-commerce business.
 - Never be pushy. Ask one question at a time.
@@ -118,7 +63,13 @@ export async function classifyAndRespond(message, history = []) {
     const result = await chat.sendMessage(message);
     const text   = result.response.text().trim();
 
-    const jsonStr = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    // Robust JSON extraction: find first { and last }
+    const firstBrace = text.indexOf('{');
+    const lastBrace = text.lastIndexOf('}');
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
+      throw new Error('No JSON object found in response');
+    }
+    const jsonStr = text.slice(firstBrace, lastBrace + 1);
     return JSON.parse(jsonStr);
 
   } catch (err) {

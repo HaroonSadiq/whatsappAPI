@@ -3,11 +3,11 @@
  * Async user store backed by LibSQL (Turso).
  *
  * Call initUsers() once at startup — it seeds the default admin account
- * (admin / admin123) if the table is empty.
+ * if the table is empty. The admin password is randomly generated on first run.
  */
 
 import bcrypt      from 'bcryptjs';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { db }      from '../db.js';
 
 // ─── Row mapper ───────────────────────────────────────────────────────────────
@@ -34,26 +34,33 @@ function sanitize({ passwordHash, ...rest }) {
 // Fixed UUID for the built-in admin account.
 // Must be stable across cold starts and serverless instances so that JWTs
 // issued by one instance remain valid when a different instance handles the
-// next request (Vercel ephemeral /tmp scenario).
+// next request.
 const ADMIN_ID = '00000000-admin-0000-0000-000000000001';
 
 /**
  * initUsers — seeds the default admin user if no users exist yet.
- * Must be awaited before the server starts accepting requests.
+ * Generates a random password on first run and logs it to console.
  */
 export async function initUsers() {
   const existing = await findByUsername('admin');
   if (!existing) {
+    // Generate a secure random password on first run
+    const randomPass = randomBytes(8).toString('hex');
     await db.execute({
       sql: `INSERT INTO users (id, username, password_hash, role, agent_id, enabled, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)`,
       args: [
         ADMIN_ID, 'admin',
-        bcrypt.hashSync('admin123', 10),
+        bcrypt.hashSync(randomPass, 10),
         'admin', null, 1, new Date().toISOString(),
       ],
     });
-    console.log('[Users] Default admin seeded (admin / admin123)');
+    console.log('[Users] ==================================================');
+    console.log('[Users] Default admin created:');
+    console.log('[Users]   Username: admin');
+    console.log('[Users]   Password: ' + randomPass);
+    console.log('[Users] ==================================================');
+    console.log('[Users] IMPORTANT: Save this password. It will not be shown again.');
   }
 }
 

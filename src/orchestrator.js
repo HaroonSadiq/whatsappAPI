@@ -23,7 +23,7 @@ if (process.env.AI_CLASSIFIER === "kimi") {
 import {
   findAvailableAgent, assignConversation, setAgentStatus,
   markAgentFailed, completeChat,
-  agentRegistry, AGENT_STATES,
+  AGENT_STATES,
 }                                         from "./agents.js";
 import {
   assignAgent, getHistory, getQueue,
@@ -41,7 +41,6 @@ import {
 const MAX_SEND_RETRIES     = 3;
 const RETRY_DELAY_MS       = 1500;
 const MAX_QUEUE_WAIT_MS    = 10 * 60 * 1000;  // 10 min → trigger AI fallback
-const AI_FALLBACK_INTERVAL = 60 * 1000;        // check queue every 60s
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function sleep(ms) {
@@ -83,20 +82,21 @@ export async function classifyIntent(message, history = []) {
 
 // ─── Step 2 — Map category → pool ────────────────────────────────────────────
 export function mapCategoryToPool(category) {
-  return agentRegistry[category] || agentRegistry.general || [];
+  // Agents are now DB-backed; this returns the category key for querying
+  return category || "general";
 }
 
 // ─── Step 3 — Check availability ─────────────────────────────────────────────
-export function selectAgent(category) {
+export async function selectAgent(category) {
   return findAvailableAgent(category);
 }
 
 // ─── Step 4 — Assign + push to agent dashboard ───────────────────────────────
 export async function assignToAgent(phone, name, text, result, logMsg, history = []) {
-  const agent = selectAgent(result.productCategory);
+  const agent = await selectAgent(result.productCategory);
   if (!agent) throw new Error("NO_AGENT_AVAILABLE");
 
-  assignConversation(agent.id);
+  await assignConversation(agent.id);
   await assignAgent(phone, agent);
   await setState(phone, "escalated");
 
@@ -111,7 +111,8 @@ export async function assignToAgent(phone, name, text, result, logMsg, history =
   try {
     await sendWithRetry(phone, connectMsg);
   } catch (err) {
-    setAgentStatus(agent.id, AGENT_STATES.AVAILABLE);
+    // Only release this conversation slot, don't reset other active chats
+    await releaseConversation(agent.id);
     throw err;
   }
 
@@ -123,13 +124,16 @@ export async function assignToAgent(phone, name, text, result, logMsg, history =
     priority:      result.customerSentiment === "frustrated" ? 1 : 0,
   });
 
+  // FIX C2: Pass agentId so DB row gets agent_id set for message pushing
   await updateSession(session.id, {
     assignedAgentId:  agent.id,
+    agentId:          agent.id,
     agentName:        agent.name,
     aiSuggestedReply: result.reply,
     reason:           result.reason,
   });
   session.assignedAgentId  = agent.id;
+  session.agentId          = agent.id;
   session.agentName        = agent.name;
   session.aiSuggestedReply = result.reply;
   session.reason           = result.reason;
@@ -205,13 +209,29 @@ export async function fallbackIfBusy(phone, name, category, sentiment = "neutral
   });
 }
 
-// ─── Step 6 — Auto-dequeue ────────────────────────────────────────────────────
+// ─── Step 6 — Auto-dequeue (atomic DB operation) ─────────────────────────────
 export async function processNextInQueue(logMsg) {
-  const fullQueue = await getQueue();
-  const nextEntry = fullQueue.find((entry) => selectAgent(entry.category) !== null);
+  // Atomic dequeue: get highest priority entry and delete it in one flow
+  const queue = await getQueue();
+  let nextEntry = null;
+  for (const entry of queue) {
+    const agent = await findAvailableAgent(entry.category);
+    if (agent) {
+      nextEntry = entry;
+      break;
+    }
+  }
   if (!nextEntry) return null;
 
+  // Atomic delete-then-process
   await dequeue(nextEntry.phone);
+  // Double-check it's still gone (another instance may have raced)
+  const stillThere = (await getQueue()).find(e => e.phone === nextEntry.phone);
+  if (stillThere) {
+    // Race lost; another instance is handling it
+    return null;
+  }
+
   console.log(`📋 Auto-dequeuing: ${nextEntry.phone} (${nextEntry.category})`);
   logEvent({
     type:      EVENT_TYPES.DEQUEUED,
@@ -244,7 +264,8 @@ export async function processNextInQueue(logMsg) {
 }
 
 // ─── AI Fallback for long-waiting queue customers ─────────────────────────────
-setInterval(async () => {
+// Replaced setInterval with a function called during webhook processing
+export async function checkQueueFallback() {
   const now = Date.now();
   const queue = await getQueue().catch(() => []);
   const longWaiters = queue.filter(
@@ -271,7 +292,7 @@ setInterval(async () => {
       // Best effort
     }
   }
-}, AI_FALLBACK_INTERVAL);
+}
 
 // ─── Main pipeline ─────────────────────────────────────────────────────────────
 export async function orchestrate(phone, name, text, history, logMsg, preClassified = null) {

@@ -32,6 +32,7 @@
     .conn-badge { font-size: .7rem; padding: 2px 7px; border-radius: 20px; font-weight: 600; }
     .conn-ok  { background: rgba(37,211,102,.15); color: var(--green); }
     .conn-err { background: rgba(255,92,92,.15);  color: var(--red);   }
+    .conn-poll { background: rgba(79,142,247,.15); color: var(--blue); }
 
     /* ── LAYOUT ── */
     .layout { display: flex; flex: 1; overflow: hidden; }
@@ -217,6 +218,30 @@ let messages        = {};   // sessionId → [{sender,text,timestamp}]
 let selectedSession = null;
 let myStatus        = 'available';
 let unread          = {};   // sessionId → count
+let usePolling      = false;
+let pollInterval    = null;
+let msgPollInterval = null;
+let lastMsgHash     = {};   // sessionId → hash of last messages for change detection
+
+// ─── API helpers (for polling fallback) ───────────────────────────────────────
+async function apiFetch(url) {
+  const r = await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+  if (r.status === 401) { logout(); throw new Error('Session expired'); }
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+async function apiPost(url, body) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify(body)
+  });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401) { logout(); throw new Error('Session expired'); }
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
 
 // ─── Connect Socket.IO ────────────────────────────────────────────────────────
 function connect() {
@@ -225,9 +250,9 @@ function connect() {
   socket.on('connect', () => {
     socket.emit('authenticate', token, (res) => {
       if (res.error) { alert('Auth failed: ' + res.error); logout(); return; }
-      setBadge(true);
+      setBadge('socket');
+      usePolling = false;
       document.getElementById('agent-name-label').textContent = res.user.username;
-      // Load initial sessions
       (res.sessions || []).forEach(s => {
         if (s.agentId === me.agentId || s.state === 'waiting') {
           sessions[s.id] = s;
@@ -238,8 +263,15 @@ function connect() {
     });
   });
 
-  socket.on('disconnect', () => setBadge(false));
-  socket.on('connect_error', () => setBadge(false));
+  socket.on('disconnect', () => {
+    setBadge('disconnected');
+    startPolling();
+  });
+
+  socket.on('connect_error', () => {
+    setBadge('disconnected');
+    startPolling();
+  });
 
   // ── New session (assigned to me) ──────────────────────────────────────────
   socket.on('session:new', ({ session, messages: msgs }) => {
@@ -297,10 +329,81 @@ function connect() {
   socket.on('agent:status', ({ agentId, status }) => {
     if (agentId === me.agentId) updateStatusUI(status);
   });
+
+  // Fallback to polling if socket doesn't connect within 6s
+  setTimeout(() => {
+    if (!socket.connected) startPolling();
+  }, 6000);
+}
+
+// ─── Polling fallback (Vercel-safe) ───────────────────────────────────────────
+function startPolling() {
+  if (usePolling) return;
+  usePolling = true;
+  setBadge('polling');
+  console.log('[Agent] Using polling mode');
+
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(async () => {
+    try {
+      const mySessions = await apiFetch('/api/sessions/mine');
+      const incoming = {};
+      let changed = false;
+      for (const s of mySessions) {
+        incoming[s.id] = s;
+        if (!sessions[s.id] || sessions[s.id].state !== s.state) {
+          changed = true;
+          sessions[s.id] = s;
+          if (!messages[s.id]) messages[s.id] = [];
+        }
+      }
+      // Remove sessions no longer in the list
+      for (const id of Object.keys(sessions)) {
+        if (!incoming[id]) {
+          delete sessions[id];
+          changed = true;
+          if (selectedSession === id) {
+            selectedSession = null;
+            showNoChat();
+          }
+        }
+      }
+      if (changed) renderSidebar();
+    } catch (e) {
+      console.error('[Poll] sessions error:', e.message);
+    }
+  }, 3000);
+
+  // Poll messages for selected session
+  if (msgPollInterval) clearInterval(msgPollInterval);
+  msgPollInterval = setInterval(async () => {
+    if (!selectedSession) return;
+    try {
+      const data = await apiFetch(`/api/sessions/${selectedSession}/history`);
+      const hash = JSON.stringify(data);
+      if (lastMsgHash[selectedSession] !== hash) {
+        lastMsgHash[selectedSession] = hash;
+        messages[selectedSession] = data.map(m => ({
+          sender: m.role === 'user' ? 'customer' : (m.role === 'assistant' ? 'agent' : 'bot'),
+          text: m.content,
+          timestamp: m.ts,
+        }));
+        renderChat(selectedSession);
+      }
+    } catch (e) {
+      console.error('[Poll] messages error:', e.message);
+    }
+  }, 2000);
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
 function acceptSession(sessionId) {
+  if (usePolling) {
+    apiPost('/api/sessions/' + sessionId + '/accept', {}).then(() => {
+      loadSessionMessages(sessionId);
+    }).catch(err => alert('Accept failed: ' + err.message));
+    return;
+  }
   socket.emit('agent:accept', { sessionId }, (res) => {
     if (res.error) return alert('Accept failed: ' + res.error);
     sessions[sessionId] = res.session;
@@ -314,9 +417,24 @@ function acceptSession(sessionId) {
 function selectSession(sessionId) {
   selectedSession    = sessionId;
   unread[sessionId]  = 0;
-  renderChat(sessionId);
+  loadSessionMessages(sessionId);
   renderSidebar();
   setTimeout(() => document.getElementById('msg-input')?.focus(), 50);
+}
+
+async function loadSessionMessages(sessionId) {
+  try {
+    const data = await apiFetch(`/api/sessions/${sessionId}/history`);
+    messages[sessionId] = data.map(m => ({
+      sender: m.role === 'user' ? 'customer' : (m.role === 'assistant' ? 'agent' : 'bot'),
+      text: m.content,
+      timestamp: m.ts,
+    }));
+    lastMsgHash[sessionId] = JSON.stringify(data);
+    renderChat(sessionId);
+  } catch (e) {
+    console.error('[LoadMessages]', e.message);
+  }
 }
 
 function sendMessage() {
@@ -329,6 +447,19 @@ function sendMessage() {
 
   input.value = '';
   input.style.height = '';
+
+  if (usePolling) {
+    apiPost('/api/send', { phone: session.customerPhone, message: text })
+      .then(() => {
+        const msg = { sender: 'agent', agentId: me.agentId, agentName: session.agentName, text, timestamp: Date.now(), sessionId: selectedSession };
+        messages[selectedSession].push(msg);
+        appendMessage(msg);
+        scrollToBottom();
+        document.getElementById('ai-suggest').style.display = 'none';
+      })
+      .catch(err => alert('Send failed: ' + err.message));
+    return;
+  }
 
   socket.emit('agent:message', { sessionId: selectedSession, text }, (res) => {
     if (res.error) return alert('Send failed: ' + res.error);
@@ -344,6 +475,26 @@ function markDone() {
   if (!selectedSession) return;
   if (!confirm('Mark this session as done? Customer will receive a rating prompt.')) return;
 
+  if (usePolling) {
+    const session = sessions[selectedSession];
+    if (!session) return;
+    apiPost('/agent-done', { agentId: me.agentId, customerPhone: session.customerPhone })
+      .then(() => {
+        appendSystemMsg('Session closed. Customer has been sent a rating prompt.');
+        document.getElementById('done-btn').disabled = true;
+        document.getElementById('msg-input').disabled = true;
+        document.getElementById('send-btn').disabled  = true;
+        setTimeout(() => {
+          delete sessions[selectedSession];
+          selectedSession = null;
+          showNoChat();
+          renderSidebar();
+        }, 3000);
+      })
+      .catch(err => alert('Failed: ' + err.message));
+    return;
+  }
+
   socket.emit('agent:done', { sessionId: selectedSession }, (res) => {
     if (res.error) return alert('Failed: ' + res.error);
   });
@@ -356,6 +507,12 @@ function handleKey(e) {
 // Status toggle
 document.getElementById('status-toggle').addEventListener('click', () => {
   const next = myStatus === 'available' ? 'offline' : 'available';
+  if (usePolling) {
+    apiPost('/api/set-agent-status', { agentId: me.agentId, status: next })
+      .then(() => updateStatusUI(next))
+      .catch(err => alert(err.message));
+    return;
+  }
   socket.emit('agent:status', { status: next }, (res) => {
     if (!res.error) updateStatusUI(next);
   });
@@ -496,10 +653,18 @@ function scrollToBottom() {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
-function setBadge(ok) {
+function setBadge(mode) {
   const b = document.getElementById('conn-badge');
-  b.textContent  = ok ? 'Connected' : 'Disconnected';
-  b.className    = 'conn-badge ' + (ok ? 'conn-ok' : 'conn-err');
+  if (mode === 'socket') {
+    b.textContent  = 'Connected';
+    b.className    = 'conn-badge conn-ok';
+  } else if (mode === 'polling') {
+    b.textContent  = 'Polling';
+    b.className    = 'conn-badge conn-poll';
+  } else {
+    b.textContent  = 'Disconnected';
+    b.className    = 'conn-badge conn-err';
+  }
 }
 
 function esc(str) {

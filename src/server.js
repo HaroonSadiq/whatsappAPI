@@ -11,7 +11,7 @@
  *  new              → first message, greet + classify
  *  active           → AI-handled FAQ conversation
  *  escalated        → support session open, agent handles via web
- *  awaiting_rating  → agent marked done, waiting for 1-5 star rating
+ *  awaiting_rating  → agent marked done, waiting for 1–5 star rating
  *  closed           → session ended
  */
 
@@ -22,14 +22,16 @@ import { Server as SocketIO } from "socket.io";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { createHmac, timingSafeEqual } from "crypto";
+import rateLimit from "express-rate-limit";
 
 // ─── DB init ──────────────────────────────────────────────────────────────────
 import { initDb }          from "./db.js";
 import { initUsers }       from "./auth/users.js";
-import { initAgentMetrics } from "./agents.js";
+import { initAgents, initAgentMetrics } from "./agents.js";
 
 await initDb();
 await initUsers();
+await initAgents();
 await initAgentMetrics();
 
 // ─── Session & state ──────────────────────────────────────────────────────────
@@ -40,14 +42,14 @@ import {
   getAssignment, releaseAssignment,
   dequeue, getQueue,
   saveRating, getRatings,
-  setFollowUpTimer, clearFollowUpTimer,
+  scheduleFollowUp, clearFollowUpTimer, getOverdueFollowUps,
   getActiveChats, updateSessionMeta, getSessionMeta,
 } from "./session.js";
 
 // ─── Agents ───────────────────────────────────────────────────────────────────
 import {
   setAgentStatus, findAvailableAgent,
-  agentRegistry, getAvailabilitySnapshot, getCategorySnapshot,
+  getAvailabilitySnapshot, getCategorySnapshot,
   getAgentMetrics, resetAgent, completeChat, releaseConversation,
   AGENT_STATES,
 } from "./agents.js";
@@ -58,7 +60,7 @@ import { integrationState, onRating, onFaqAnswered } from "./integrations.js";
 import { enqueueJob, getQueueStats }  from "./queue.js";
 import { logEvent, getEventLog, getConversationLog, getLogStats, EVENT_TYPES } from "./logger.js";
 import {
-  orchestrate, classifyIntent, processNextInQueue,
+  orchestrate, classifyIntent, processNextInQueue, checkQueueFallback,
 } from "./orchestrator.js";
 
 // ─── Support sessions ─────────────────────────────────────────────────────────
@@ -87,14 +89,11 @@ const PORT         = process.env.PORT || 3001;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const APP_SECRET   = process.env.APP_SECRET;
 
-const FOLLOW_UP_DELAY_MS  = 5 * 60 * 1000;
-const CLOSE_CHAT_DELAY_MS = 5 * 60 * 1000;
-
 // ─── App setup ────────────────────────────────────────────────────────────────
 const app        = express();
 const httpServer = createServer(app);
 const io         = new SocketIO(httpServer, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
+  cors: { origin: process.env.CLIENT_ORIGIN || "*", methods: ["GET", "POST"] },
   transports: ["websocket", "polling"],
 });
 
@@ -107,6 +106,36 @@ app.get("/login", (_req, res) => res.sendFile(join(__dirname, "../public/login.h
 app.get("/agent", (_req, res) => res.sendFile(join(__dirname, "../public/agent/dashboard.html")));
 
 // Static files — serve admin dashboard and assets
+// ─── Rate limiting ────────────────────────────────────────────────────────────
+const standardLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 60,
+  message: { error: 'Too many requests, please try again later.' },
+});
+
+const webhookLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 30,
+  message: { error: 'Webhook rate limit exceeded.' },
+});
+
+const loginLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many login attempts. Please try again later.' },
+});
+
+const sendLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many messages sent. Please slow down.' },
+});
+
+app.use('/api/auth/login', loginLimiter);
+app.use('/webhook', webhookLimiter);
+app.use('/api/send', sendLimiter);
+app.use(standardLimiter);
+
 app.use(express.static(join(__dirname, "../public")));
 
 // ─── In-memory message log ───────────────────────────────────────────────────
@@ -171,7 +200,12 @@ app.post("/webhook", (req, res) => {
   enqueueJob(phone, async () => {
     try {
       await updateContact(phone, { name });
-      clearFollowUpTimer(phone);
+      await clearFollowUpTimer(phone);
+
+      // Check and process any overdue follow-ups globally
+      await processOverdueFollowUps();
+      // Check for long-waiting queue customers needing AI fallback
+      await checkQueueFallback();
 
       // Interactive button reply
       if (msg.type === "interactive" && msg.interactive?.type === "button_reply") {
@@ -179,7 +213,11 @@ app.post("/webhook", (req, res) => {
         return;
       }
 
-      if (msg.type !== "text") return;
+      // Handle non-text messages gracefully
+      if (msg.type !== "text") {
+        await sendMessage(phone, "Sorry, I can only process text messages right now. Please send your question as text. 😊");
+        return;
+      }
 
       const text  = msg.text.body.trim();
       const state = await getState(phone);
@@ -260,18 +298,18 @@ async function handleActiveConversation(phone, name, text, alreadyInHistory = fa
         { id: "connect_human",  title: "Talk to a Specialist" },
       ]);
     }
-    scheduleFollowUp(phone, name);
+    await scheduleFollowUp(phone, name, 'nudge', 5 * 60 * 1000);
   }
 }
 
 // ─── Button reply ─────────────────────────────────────────────────────────────
 async function handleButtonReply(phone, name, buttonId) {
-  clearFollowUpTimer(phone);
+  await clearFollowUpTimer(phone);
 
   switch (buttonId) {
     case "more_questions":
       await sendMessage(phone, "Of course! What would you like to know? 😊");
-      scheduleFollowUp(phone, name);
+      await scheduleFollowUp(phone, name, 'nudge', 5 * 60 * 1000);
       break;
 
     case "connect_human": {
@@ -295,13 +333,14 @@ async function handleButtonReply(phone, name, buttonId) {
 
     default:
       await sendMessage(phone, "What can I help you with? 😊");
-      scheduleFollowUp(phone, name);
+      await scheduleFollowUp(phone, name, 'nudge', 5 * 60 * 1000);
   }
 }
 
 // ─── Rating ───────────────────────────────────────────────────────────────────
 async function handleRating(phone, name, text) {
-  const score = parseInt(text.trim(), 10);
+  // Extract numeric score, handling emojis and text
+  const score = extractRating(text);
   if (score >= 1 && score <= 5) {
     await saveRating(phone, name, score);
     onRating({ customerPhone: phone, customerName: name, score }).catch(() => {});
@@ -311,6 +350,13 @@ async function handleRating(phone, name, text) {
       `Thank you for rating us ${stars} (${score}/5)! Your feedback means a lot. 🙏\n\nFeel free to message us anytime! 👋`
     );
     await setState(phone, "closed");
+
+    // Clean up support session and active chat
+    const session = await getSessionByPhone(phone);
+    if (session) await closeSession(session.id);
+    const assignment = await getAssignment(phone);
+    if (assignment?.agentId) await releaseConversation(assignment.agentId);
+    await releaseAssignment(phone);
     await clearSession(phone);
   } else {
     await setState(phone, "active");
@@ -318,34 +364,55 @@ async function handleRating(phone, name, text) {
   }
 }
 
-// ─── Follow-up timers ─────────────────────────────────────────────────────────
-function scheduleFollowUp(phone, name) {
-  clearFollowUpTimer(phone);
-  const firstName = name.split(" ")[0];
+function extractRating(text) {
+  const cleaned = text.trim();
+  // Try direct parse first
+  const direct = parseInt(cleaned, 10);
+  if (!isNaN(direct) && direct >= 1 && direct <= 5) return direct;
+  // Count star emojis
+  const starCount = (cleaned.match(/[⭐★]/g) || []).length;
+  if (starCount >= 1 && starCount <= 5) return starCount;
+  // Fallback: find first digit 1-5
+  const match = cleaned.match(/[1-5]/);
+  return match ? parseInt(match[0], 10) : NaN;
+}
 
-  const t1 = setTimeout(async () => {
-    if ((await getState(phone)) !== "active") return;
-    await sendMessage(phone, `Hi ${firstName}, just checking if you're still there? 😊`);
+// ─── Follow-up processing (DB-driven, Vercel-safe) ────────────────────────────
+async function processOverdueFollowUps() {
+  try {
+    const overdue = await getOverdueFollowUps();
+    for (const fu of overdue) {
+      await clearFollowUpTimer(fu.phone);
+      const state = await getState(fu.phone);
+      if (state !== 'active') continue;
 
-    const t2 = setTimeout(async () => {
-      if ((await getState(phone)) !== "active") return;
-      await sendMessage(phone, "I'll close the chat for now, but feel free to message us anytime! 👋");
-      await setState(phone, "closed");
-      await clearSession(phone);
-    }, CLOSE_CHAT_DELAY_MS);
+      if (fu.stage === 'nudge') {
+        await sendMessage(fu.phone, `Hi ${fu.name?.split(' ')[0] || 'there'}, just checking if you're still there? 😊`);
+        await scheduleFollowUp(fu.phone, fu.name, 'close', 5 * 60 * 1000);
+      } else if (fu.stage === 'close') {
+        await sendMessage(fu.phone, "I'll close the chat for now, but feel free to message us anytime! 👋");
+        await setState(fu.phone, "closed");
 
-    setFollowUpTimer(phone, t2);
-  }, FOLLOW_UP_DELAY_MS);
-
-  setFollowUpTimer(phone, t1);
+        // Close support session and clean up
+        const session = await getSessionByPhone(fu.phone);
+        if (session) await closeSession(session.id);
+        const assignment = await getAssignment(fu.phone);
+        if (assignment?.agentId) await releaseConversation(assignment.agentId);
+        await releaseAssignment(fu.phone);
+        await clearSession(fu.phone);
+      }
+    }
+  } catch (err) {
+    console.error('[FollowUp] Error processing overdue:', err.message);
+  }
 }
 
 // ─── Admin & Agent APIs (protected) ──────────────────────────────────────────
 
-/** GET /status — quick health check */
-app.get("/status", (_req, res) => {
+/** GET /status — quick health check (auth required) */
+app.get("/status", requireAuth, async (_req, res) => {
   res.json({
-    agents:       getAvailabilitySnapshot(),
+    agents:       await getAvailabilitySnapshot(),
     integrations: integrationState,
   });
 });
@@ -353,7 +420,7 @@ app.get("/status", (_req, res) => {
 /** GET /api/dashboard — full data for admin dashboard */
 app.get("/api/dashboard", requireAuth, async (_req, res) => {
   try {
-    const agents   = getAvailabilitySnapshot();
+    const agents   = await getAvailabilitySnapshot();
     const queue    = await getQueue();
     const ratings  = await getRatings();
     const all      = Object.values(agents).flat();
@@ -372,11 +439,11 @@ app.get("/api/dashboard", requireAuth, async (_req, res) => {
 
     res.json({
       agents,
-      categories:  getCategorySnapshot(),
+      categories:  await getCategorySnapshot(),
       queue,
       ratings: ratings.slice(-20).reverse(),
       activeChats: await getActiveChats(),
-      metrics: getAgentMetrics(),
+      metrics: await getAgentMetrics(),
       sessions: await getAllSessions(),
       stats: {
         totalAgents, availableAgents, busyAgents,
@@ -412,8 +479,8 @@ app.get("/api/logs/:phone", requireAuth, (req, res) => {
 });
 
 /** GET /api/metrics */
-app.get("/api/metrics", requireAuth, (_req, res) => {
-  res.json(getAgentMetrics());
+app.get("/api/metrics", requireAuth, async (_req, res) => {
+  res.json(await getAgentMetrics());
 });
 
 /** GET /api/sessions — all support sessions */
@@ -455,7 +522,7 @@ app.post("/agent-done", requireAuth, async (req, res) => {
   }
   const session = await getSessionByPhone(customerPhone);
   if (session) await closeSession(session.id);
-  releaseConversation(agentId);
+  await releaseConversation(agentId);
   await releaseAssignment(customerPhone);
   await setState(customerPhone, "awaiting_rating");
   await sendMessage(customerPhone, "Your query has been resolved. Thank you! 🙏\nPlease rate your experience (reply 1–5).");
@@ -472,7 +539,7 @@ app.post("/api/set-agent-status", requireAdmin, async (req, res) => {
     return res.status(400).json({ error: `agentId and status (${validStates.join("|")}) required` });
   }
 
-  const ok = status === AGENT_STATES.AVAILABLE ? resetAgent(agentId) : setAgentStatus(agentId, status);
+  const ok = status === AGENT_STATES.AVAILABLE ? await resetAgent(agentId) : await setAgentStatus(agentId, status);
   if (!ok) return res.status(404).json({ error: "Agent not found" });
 
   io.to("all").emit("agent:status", { agentId, status });
@@ -493,7 +560,7 @@ app.post("/api/assign", requireAdmin, async (req, res) => {
   const entry = queue.find((e) => e.phone === customerPhone);
   if (!entry) return res.status(404).json({ error: "Customer not in queue" });
 
-  const agent = findAvailableAgent(entry.category);
+  const agent = await findAvailableAgent(entry.category);
   if (!agent) return res.status(409).json({ error: "No available agent for this category" });
 
   await dequeue(customerPhone);

@@ -117,12 +117,43 @@ export async function initDb() {
     `CREATE INDEX IF NOT EXISTS idx_sessions_phone ON support_sessions(customer_phone)`,
     `CREATE INDEX IF NOT EXISTS idx_sessions_state ON support_sessions(state)`,
 
+    // ── Agent definitions ─────────────────────────────────────────────────────
+    `CREATE TABLE IF NOT EXISTS agents (
+      id                         TEXT    PRIMARY KEY,
+      name                       TEXT    NOT NULL,
+      category                   TEXT    NOT NULL,
+      skills                     TEXT    DEFAULT '[]',
+      max_concurrent_conversations INTEGER DEFAULT 3,
+      phone                      TEXT,
+      created_at                 INTEGER NOT NULL
+    )`,
+
+    // ── Agent runtime state (Vercel-safe: persisted instead of in-memory)
+    `CREATE TABLE IF NOT EXISTS agent_runtime (
+      agent_id              TEXT    PRIMARY KEY,
+      status                TEXT    NOT NULL DEFAULT 'available',
+      active_conversations  INTEGER DEFAULT 0,
+      current_chat_start    INTEGER,
+      cooldown_until        INTEGER,
+      last_active_at        INTEGER,
+      updated_at            INTEGER NOT NULL
+    )`,
+
     // ── Agent lifetime metrics ─────────────────────────────────────────────────
     `CREATE TABLE IF NOT EXISTS agent_metrics (
       agent_id          TEXT    PRIMARY KEY,
       chat_count        INTEGER DEFAULT 0,
       total_response_ms INTEGER DEFAULT 0,
       last_active_at    INTEGER
+    )`,
+
+    // ── Follow-up schedule (replaces in-memory setTimeout)
+    `CREATE TABLE IF NOT EXISTS follow_up_schedule (
+      phone         TEXT    PRIMARY KEY,
+      customer_name TEXT,
+      stage         TEXT    NOT NULL DEFAULT 'nudge',
+      scheduled_at  INTEGER NOT NULL,
+      created_at    INTEGER NOT NULL
     )`,
 
     // ── Users (agents + admins) ───────────────────────────────────────────────

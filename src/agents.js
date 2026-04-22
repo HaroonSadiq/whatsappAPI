@@ -3,16 +3,16 @@
  * Agent registry with category metadata, multi-capacity load tracking,
  * load balancing, and performance metrics.
  *
+ * Vercel-safe architecture: all runtime state is persisted to Turso DB.
+ * In-memory Maps and setTimeout handles have been replaced with DB queries
+ * and timestamp-based cooldown checks.
+ *
  * Agent states:
  *  available  — ready to accept more conversations (load < max)
  *  busy       — at full capacity (activeConversations >= maxConcurrentConversations)
- *  cooldown   — all conversations done, post-chat break (auto → available)
+ *  cooldown   — post-chat break (auto-resets when cooldown_until < now)
  *  offline    — manually taken offline (requires manual reset)
  *  failed     — system flagged after repeated send failures (requires manual reset)
- *
- * Key change vs simple on/off:
- *  Agents stay "available" until activeConversations reaches maxConcurrentConversations.
- *  This allows one agent to handle multiple chats before being marked busy.
  */
 
 import { logEvent } from "./logger.js";
@@ -20,8 +20,7 @@ import { db }       from "./db.js";
 
 // ─── Metric persistence helpers ───────────────────────────────────────────────
 
-// Fire-and-forget — metrics loss on failure is acceptable (in-memory is source of truth)
-function _persistMetrics(agent) {
+function _persistMetrics(agentId, chatCount, totalResponseMs, lastActiveAt) {
   db.execute({
     sql: `INSERT INTO agent_metrics (agent_id, chat_count, total_response_ms, last_active_at)
           VALUES (@agent_id, @chat_count, @total_response_ms, @last_active_at)
@@ -29,14 +28,19 @@ function _persistMetrics(agent) {
             chat_count        = excluded.chat_count,
             total_response_ms = excluded.total_response_ms,
             last_active_at    = excluded.last_active_at`,
-    args: {
-      agent_id:          agent.id,
-      chat_count:        agent.chatCount,
-      total_response_ms: agent.totalResponseMs,
-      last_active_at:    agent.lastActiveAt,
-    },
+    args: { agent_id: agentId, chat_count: chatCount, total_response_ms: totalResponseMs, last_active_at: lastActiveAt },
   }).catch(err => console.error('[Agents] metrics persist error:', err.message));
 }
+
+// ─── Seed data (migrated from hardcoded registry) ─────────────────────────────
+
+const SEED_AGENTS = [
+  { id: 'clothing_agent_1', name: 'Hamza Tariq',   category: 'clothing', skills: ['sizing_help','fashion_recommendations','returns_exchanges'], maxConcurrentConversations: 3 },
+  { id: 'clothing_agent_2', name: 'Nida Awan',     category: 'clothing', skills: ['product_inquiries','order_assistance','returns_exchanges'], maxConcurrentConversations: 3 },
+  { id: 'tech_agent_1',     name: 'Hafiz',         category: 'tech',     skills: ['device_troubleshooting','technical_support','product_specs'], maxConcurrentConversations: 2 },
+  { id: 'tech_agent_2',     name: 'Haroon',        category: 'tech',     skills: ['setup_guidance','warranty_inquiries','technical_support'], maxConcurrentConversations: 2 },
+  { id: 'G1',               name: 'Faisal Beg',    category: 'general',  skills: ['general_support'], maxConcurrentConversations: 5 },
+];
 
 export const AGENT_STATES = {
   AVAILABLE: "available",
@@ -46,11 +50,9 @@ export const AGENT_STATES = {
   FAILED:    "failed",
 };
 
-const COOLDOWN_MS = 2 * 60 * 1000; // 2-minute break after all chats complete
+const COOLDOWN_MS = 2 * 60 * 1000;
 
 // ─── Category Registry ────────────────────────────────────────────────────────
-// Source of truth for categories. Add new categories here — routing picks them
-// up automatically without any other code change.
 export const categoryRegistry = {
   clothing: {
     id:          "clothing",
@@ -72,413 +74,421 @@ export const categoryRegistry = {
   },
 };
 
-// ─── Agent Registry ───────────────────────────────────────────────────────────
-// Extra runtime fields per agent:
-//   chatCount            — total completed chats (lifetime)
-//   totalResponseMs      — sum of response times for avg calculation
-//   currentChatStart     — timestamp of current chat batch start
-//   cooldownTimer        — setTimeout handle
-//   activeConversations  — how many chats this agent is currently handling
-//   lastActiveAt         — timestamp of last conversation assignment
-export const agentRegistry = {
-  clothing: [
-    {
-      id:                       "clothing_agent_1",
-      name:                     "Hamza Tariq",
-      status:                   AGENT_STATES.AVAILABLE,
-      skills:                   ["sizing_help", "fashion_recommendations", "returns_exchanges"],
-      maxConcurrentConversations: 3,
-      activeConversations:      0,
-      lastActiveAt:             null,
-      chatCount:                0,
-      totalResponseMs:          0,
-      currentChatStart:         null,
-      cooldownTimer:            null,
-    },
-    {
-      id:                       "clothing_agent_2",
-      name:                     "Nida Awan",
-      status:                   AGENT_STATES.AVAILABLE,
-      skills:                   ["product_inquiries", "order_assistance", "returns_exchanges"],
-      maxConcurrentConversations: 3,
-      activeConversations:      0,
-      lastActiveAt:             null,
-      chatCount:                0,
-      totalResponseMs:          0,
-      currentChatStart:         null,
-      cooldownTimer:            null,
-    },
-  ],
-  tech: [
-    {
-      id:                       "tech_agent_1",
-      name:                     "Hafiz",
-      status:                   AGENT_STATES.AVAILABLE,
-      skills:                   ["device_troubleshooting", "technical_support", "product_specs"],
-      maxConcurrentConversations: 2,
-      activeConversations:      0,
-      lastActiveAt:             null,
-      chatCount:                0,
-      totalResponseMs:          0,
-      currentChatStart:         null,
-      cooldownTimer:            null,
-    },
-    {
-      id:                       "tech_agent_2",
-      name:                     "Haroon",
-      status:                   AGENT_STATES.AVAILABLE,
-      skills:                   ["setup_guidance", "warranty_inquiries", "technical_support"],
-      maxConcurrentConversations: 2,
-      activeConversations:      0,
-      lastActiveAt:             null,
-      chatCount:                0,
-      totalResponseMs:          0,
-      currentChatStart:         null,
-      cooldownTimer:            null,
-    },
-  ],
-  general: [
-    {
-      id:                       "G1",
-      name:                     "Faisal Beg",
-      status:                   AGENT_STATES.AVAILABLE,
-      skills:                   ["general_support"],
-      maxConcurrentConversations: 5,
-      activeConversations:      0,
-      lastActiveAt:             null,
-      chatCount:                0,
-      totalResponseMs:          0,
-      currentChatStart:         null,
-      cooldownTimer:            null,
-    },
-  ],
-};
+// ─── Seed agents into DB on startup ───────────────────────────────────────────
+
+export async function initAgents() {
+  for (const a of SEED_AGENTS) {
+    await db.execute({
+      sql: `INSERT INTO agents (id, name, category, skills, max_concurrent_conversations, created_at)
+            VALUES (@id, @name, @category, @skills, @max, @created)
+            ON CONFLICT(id) DO NOTHING`,
+      args: {
+        id: a.id, name: a.name, category: a.category,
+        skills: JSON.stringify(a.skills), max: a.maxConcurrentConversations,
+        created: Date.now(),
+      },
+    });
+    // Ensure runtime row exists
+    await db.execute({
+      sql: `INSERT INTO agent_runtime (agent_id, status, active_conversations, updated_at)
+            VALUES (@id, 'available', 0, @now)
+            ON CONFLICT(agent_id) DO NOTHING`,
+      args: { id: a.id, now: Date.now() },
+    });
+  }
+  console.log('[Agents] Seeded into DB');
+}
 
 // ─── Restore persisted metrics on startup ────────────────────────────────────
 
-/**
- * initAgentMetrics — load lifetime metrics from DB into the in-memory registry.
- * Must be called once at startup (after initDb).
- */
 export async function initAgentMetrics() {
   const result = await db.execute('SELECT * FROM agent_metrics');
   const metricMap = new Map(result.rows.map(r => [r.agent_id, r]));
-  for (const agents of Object.values(agentRegistry)) {
-    for (const agent of agents) {
-      const m = metricMap.get(agent.id);
-      if (m) {
-        agent.chatCount       = Number(m.chat_count);
-        agent.totalResponseMs = Number(m.total_response_ms);
-        agent.lastActiveAt    = m.last_active_at ? Number(m.last_active_at) : null;
-      }
-    }
+  // Restore chat counts into agent_runtime as well for consistency
+  for (const [agentId, m] of metricMap) {
+    await db.execute({
+      sql: `UPDATE agent_runtime SET chat_count = @cc, total_response_ms = @tr WHERE agent_id = @id`,
+      args: { id: agentId, cc: Number(m.chat_count), tr: Number(m.total_response_ms) },
+    }).catch(() => {});
   }
   console.log('[Agents] Metrics restored from DB');
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
-function _allAgents() {
-  return Object.values(agentRegistry).flat();
+
+async function _getAgentDef(agentId) {
+  const r = await db.execute({ sql: 'SELECT * FROM agents WHERE id = ?', args: [agentId] });
+  return r.rows[0] ?? null;
 }
 
-function _agentEntry(agentId) {
-  for (const agents of Object.values(agentRegistry)) {
-    const a = agents.find((x) => x.id === agentId);
-    if (a) return a;
+async function _getRuntime(agentId) {
+  const r = await db.execute({ sql: 'SELECT * FROM agent_runtime WHERE agent_id = ?', args: [agentId] });
+  return r.rows[0] ?? null;
+}
+
+async function _setRuntime(agentId, patch) {
+  const sets = [];
+  const args = { id: agentId, now: Date.now() };
+  for (const [k, v] of Object.entries(patch)) {
+    sets.push(`${k} = @${k}`);
+    args[k] = v;
   }
-  return null;
+  if (sets.length === 0) return;
+  sets.push('updated_at = @now');
+  await db.execute({
+    sql: `UPDATE agent_runtime SET ${sets.join(', ')} WHERE agent_id = @id`,
+    args,
+  });
+}
+
+async function _allAgentsWithRuntime() {
+  const r = await db.execute(`
+    SELECT a.*, r.status, r.active_conversations, r.current_chat_start, r.cooldown_until, r.last_active_at, r.chat_count, r.total_response_ms
+    FROM agents a
+    LEFT JOIN agent_runtime r ON a.id = r.agent_id
+    ORDER BY a.category, a.id
+  `);
+  return r.rows;
 }
 
 function _categoryOf(agentId) {
-  for (const [cat, agents] of Object.entries(agentRegistry)) {
-    if (agents.find((x) => x.id === agentId)) return cat;
+  const m = agentId.match(/^([^_]+)/);
+  return m ? m[1] : 'general';
+}
+
+// ─── Cooldown checker (replaces setTimeout) ───────────────────────────────────
+
+async function _resolveCooldowns() {
+  const now = Date.now();
+  const r = await db.execute({
+    sql: `SELECT agent_id FROM agent_runtime WHERE status = 'cooldown' AND cooldown_until <= ?`,
+    args: [now],
+  });
+  for (const row of r.rows) {
+    await _setRuntime(row.agent_id, { status: AGENT_STATES.AVAILABLE, cooldown_until: null });
+    logEvent({ type: 'agent_cooldown_done', agentId: row.agent_id, category: _categoryOf(row.agent_id) });
+    console.log(`[Agents] ${row.agent_id} cooldown ended — available`);
   }
-  return null;
 }
 
 // ─── findAvailableAgent — load-balanced ───────────────────────────────────────
-/**
- * Returns the agent in the pool with available capacity AND the lowest load
- * ratio (activeConversations / maxConcurrentConversations).
- *
- * Falls back to general pool, then any available agent across all categories.
- * Returns null only when every reachable agent is at capacity / offline / failed.
- */
-export function findAvailableAgent(category) {
+
+export async function findAvailableAgent(category) {
+  await _resolveCooldowns();
+  const now = Date.now();
+
+  const rows = await _allAgentsWithRuntime();
+
   const canAccept = (a) =>
     a.status !== AGENT_STATES.OFFLINE &&
-    a.status !== AGENT_STATES.FAILED  &&
+    a.status !== AGENT_STATES.FAILED &&
     a.status !== AGENT_STATES.COOLDOWN &&
-    a.activeConversations < a.maxConcurrentConversations;
+    (a.active_conversations ?? 0) < (a.max_concurrent_conversations ?? 1);
 
   const leastLoaded = (pool) =>
     pool
       .filter(canAccept)
-      .sort((a, b) => (a.activeConversations / a.maxConcurrentConversations) -
-                      (b.activeConversations / b.maxConcurrentConversations))[0] || null;
+      .sort((a, b) => ((a.active_conversations ?? 0) / (a.max_concurrent_conversations ?? 1)) -
+                      ((b.active_conversations ?? 0) / (b.max_concurrent_conversations ?? 1)))[0] || null;
 
-  const pool = agentRegistry[category] || agentRegistry.general;
+  const byCat = (cat) => rows.filter(r => r.category === cat);
+
+  const pool = byCat(category).length ? byCat(category) : byCat('general');
   const agent = leastLoaded(pool);
-  if (agent) return agent;
+  if (agent) return _toAgentObj(agent);
 
   // Fallback: general pool
-  if (category !== "general") {
-    const gen = leastLoaded(agentRegistry.general || []);
-    if (gen) return gen;
+  if (category !== 'general') {
+    const gen = leastLoaded(byCat('general'));
+    if (gen) return _toAgentObj(gen);
   }
 
   // Last resort: any agent across all categories
-  return leastLoaded(_allAgents()) || null;
+  return leastLoaded(rows) ? _toAgentObj(leastLoaded(rows)) : null;
+}
+
+function _toAgentObj(row) {
+  return {
+    id:                       row.id,
+    name:                     row.name,
+    category:                 row.category,
+    status:                   row.status,
+    skills:                   JSON.parse(row.skills || '[]'),
+    maxConcurrentConversations: row.max_concurrent_conversations ?? 3,
+    activeConversations:      row.active_conversations ?? 0,
+    lastActiveAt:             row.last_active_at ? Number(row.last_active_at) : null,
+    chatCount:                row.chat_count ? Number(row.chat_count) : 0,
+    totalResponseMs:          row.total_response_ms ? Number(row.total_response_ms) : 0,
+    currentChatStart:         row.current_chat_start ? Number(row.current_chat_start) : null,
+  };
 }
 
 // ─── assignConversation ───────────────────────────────────────────────────────
-/**
- * Increment an agent's active conversation count.
- * Only marks BUSY when the agent reaches maxConcurrentConversations.
- * Marks chatStart on first conversation.
- *
- * Call this instead of setAgentStatus(BUSY) when routing a customer.
- *
- * @returns {boolean} true if found
- */
-export function assignConversation(agentId) {
-  const agent = _agentEntry(agentId);
-  if (!agent) return false;
 
-  // Clear any pending cooldown — agent is active again
-  if (agent.cooldownTimer) {
-    clearTimeout(agent.cooldownTimer);
-    agent.cooldownTimer = null;
-  }
+export async function assignConversation(agentId) {
+  const def = await _getAgentDef(agentId);
+  if (!def) return false;
 
-  agent.activeConversations += 1;
-  agent.lastActiveAt        = Date.now();
+  const rt = await _getRuntime(agentId);
+  if (!rt) return false;
 
-  // Record start time on first conversation
-  if (agent.activeConversations === 1) {
-    agent.currentChatStart = Date.now();
-  }
+  const active = (rt.active_conversations ?? 0) + 1;
+  const status = active >= (def.max_concurrent_conversations ?? 1) ? AGENT_STATES.BUSY : AGENT_STATES.AVAILABLE;
+  const chatStart = active === 1 ? Date.now() : (rt.current_chat_start ?? Date.now());
 
-  // Mark BUSY only when at full capacity
-  if (agent.activeConversations >= agent.maxConcurrentConversations) {
-    agent.status = AGENT_STATES.BUSY;
-  } else {
-    agent.status = AGENT_STATES.AVAILABLE;
-  }
-
-  _persistMetrics(agent);
+  await _setRuntime(agentId, {
+    active_conversations: active,
+    status,
+    current_chat_start: chatStart,
+    last_active_at: Date.now(),
+    cooldown_until: null,
+  });
 
   logEvent({
-    type:     "agent_conversation_assigned",
-    agentId:  agent.id,
+    type:     'agent_conversation_assigned',
+    agentId,
     category: _categoryOf(agentId),
-    meta:     { activeConversations: agent.activeConversations, max: agent.maxConcurrentConversations },
+    meta:     { activeConversations: active, max: def.max_concurrent_conversations },
   });
 
   return true;
 }
 
 // ─── releaseConversation ──────────────────────────────────────────────────────
-/**
- * Decrement an agent's active conversation count.
- * Enters cooldown only when the last conversation is released.
- * If more conversations remain, agent stays available.
- *
- * @param {string} agentId
- * @param {object} [opts]
- * @param {number} [opts.cooldownMs] — override cooldown duration
- * @returns {boolean}
- */
-export function releaseConversation(agentId, opts = {}) {
-  const agent = _agentEntry(agentId);
-  if (!agent) return false;
 
-  // Track response time when completing a chat
-  if (agent.currentChatStart) {
-    const elapsed = Date.now() - agent.currentChatStart;
-    agent.totalResponseMs += elapsed;
-    agent.chatCount       += 1;
-    _persistMetrics(agent);
+export async function releaseConversation(agentId, opts = {}) {
+  const rt = await _getRuntime(agentId);
+  if (!rt) return false;
+
+  const def = await _getAgentDef(agentId);
+  const max = def?.max_concurrent_conversations ?? 1;
+
+  let chatCount = rt.chat_count ? Number(rt.chat_count) : 0;
+  let totalResponseMs = rt.total_response_ms ? Number(rt.total_response_ms) : 0;
+
+  if (rt.current_chat_start) {
+    const elapsed = Date.now() - Number(rt.current_chat_start);
+    totalResponseMs += elapsed;
+    chatCount += 1;
+    _persistMetrics(agentId, chatCount, totalResponseMs, Date.now());
     logEvent({
-      type:     "agent_chat_complete",
-      agentId:  agent.id,
+      type:     'agent_chat_complete',
+      agentId,
       category: _categoryOf(agentId),
-      meta:     { chatCount: agent.chatCount, responseMs: elapsed, activeConversations: agent.activeConversations },
+      meta:     { chatCount, responseMs: elapsed, activeConversations: Math.max(0, (rt.active_conversations ?? 1) - 1) },
     });
   }
 
-  agent.activeConversations = Math.max(0, agent.activeConversations - 1);
+  const active = Math.max(0, (rt.active_conversations ?? 1) - 1);
 
-  if (agent.activeConversations > 0) {
-    // Still handling other conversations — stay available
-    agent.status           = AGENT_STATES.AVAILABLE;
-    agent.currentChatStart = Date.now(); // reset timer for remaining chats
-    logEvent({ type: "agent_conversation_released", agentId: agent.id, meta: { remaining: agent.activeConversations } });
+  if (active > 0) {
+    await _setRuntime(agentId, {
+      active_conversations: active,
+      status: AGENT_STATES.AVAILABLE,
+      current_chat_start: Date.now(),
+      chat_count: chatCount,
+      total_response_ms: totalResponseMs,
+    });
+    logEvent({ type: 'agent_conversation_released', agentId, meta: { remaining: active } });
   } else {
-    // All conversations done — enter cooldown
-    agent.currentChatStart = null;
-    agent.status           = AGENT_STATES.COOLDOWN;
-
     const delay = opts.cooldownMs ?? COOLDOWN_MS;
-    agent.cooldownTimer = setTimeout(() => {
-      if (agent.status === AGENT_STATES.COOLDOWN) {
-        agent.status       = AGENT_STATES.AVAILABLE;
-        agent.cooldownTimer = null;
-        logEvent({ type: "agent_cooldown_done", agentId: agent.id, category: _categoryOf(agentId) });
-        console.log(`[Agents] ${agent.name} (${agentId}) cooldown ended — available`);
-      }
-    }, delay);
+    await _setRuntime(agentId, {
+      active_conversations: 0,
+      status: AGENT_STATES.COOLDOWN,
+      current_chat_start: null,
+      cooldown_until: Date.now() + delay,
+      chat_count: chatCount,
+      total_response_ms: totalResponseMs,
+    });
   }
 
   return true;
 }
 
-// ─── completeChat (alias for backward compat) ─────────────────────────────────
-export function completeChat(agentId) {
+// ─── completeChat (alias) ─────────────────────────────────────────────────────
+
+export async function completeChat(agentId) {
   return releaseConversation(agentId);
 }
 
 // ─── setAgentStatus ───────────────────────────────────────────────────────────
-/**
- * Manually force an agent's status (offline, available reset, etc.).
- * Not used for normal conversation assignment — use assignConversation / releaseConversation.
- */
-export function setAgentStatus(agentId, status, opts = {}) {
-  const agent = _agentEntry(agentId);
-  if (!agent) return false;
 
-  if (agent.cooldownTimer) {
-    clearTimeout(agent.cooldownTimer);
-    agent.cooldownTimer = null;
-  }
+export async function setAgentStatus(agentId, status, opts = {}) {
+  const def = await _getAgentDef(agentId);
+  if (!def) return false;
 
-  // When manually resetting to available, clear load counters
+  const patch = { status };
+
   if (status === AGENT_STATES.AVAILABLE) {
-    agent.activeConversations = 0;
-    agent.currentChatStart    = null;
+    patch.active_conversations = 0;
+    patch.current_chat_start = null;
+    patch.cooldown_until = null;
   }
-
-  agent.status = status;
 
   if (status === AGENT_STATES.COOLDOWN) {
     const delay = opts.cooldownMs ?? COOLDOWN_MS;
-    agent.cooldownTimer = setTimeout(() => {
-      if (agent.status === AGENT_STATES.COOLDOWN) {
-        agent.status        = AGENT_STATES.AVAILABLE;
-        agent.cooldownTimer = null;
-        logEvent({ type: "agent_cooldown_done", agentId: agent.id, category: _categoryOf(agentId) });
-      }
-    }, delay);
+    patch.cooldown_until = Date.now() + delay;
   }
 
+  if (status !== AGENT_STATES.COOLDOWN) {
+    patch.cooldown_until = null;
+  }
+
+  await _setRuntime(agentId, patch);
   return true;
 }
 
 // ─── resetAgent ───────────────────────────────────────────────────────────────
-export function resetAgent(agentId) {
-  const agent = _agentEntry(agentId);
-  if (!agent) return false;
-  if (agent.cooldownTimer) { clearTimeout(agent.cooldownTimer); agent.cooldownTimer = null; }
-  agent.status              = AGENT_STATES.AVAILABLE;
-  agent.activeConversations = 0;
-  agent.currentChatStart    = null;
-  logEvent({ type: "agent_reset", agentId: agent.id });
+
+export async function resetAgent(agentId) {
+  const def = await _getAgentDef(agentId);
+  if (!def) return false;
+  await _setRuntime(agentId, {
+    status: AGENT_STATES.AVAILABLE,
+    active_conversations: 0,
+    current_chat_start: null,
+    cooldown_until: null,
+  });
+  logEvent({ type: 'agent_reset', agentId });
   return true;
 }
 
 // ─── markAgentFailed ─────────────────────────────────────────────────────────
-export function markAgentFailed(agentId) {
-  const agent = _agentEntry(agentId);
-  if (!agent) return false;
-  if (agent.cooldownTimer) { clearTimeout(agent.cooldownTimer); agent.cooldownTimer = null; }
-  agent.status = AGENT_STATES.FAILED;
-  logEvent({ type: "agent_failed", agentId: agent.id });
+
+export async function markAgentFailed(agentId) {
+  const def = await _getAgentDef(agentId);
+  if (!def) return false;
+  await _setRuntime(agentId, { status: AGENT_STATES.FAILED, cooldown_until: null });
+  logEvent({ type: 'agent_failed', agentId });
   console.warn(`[Agents] Agent ${agentId} marked FAILED`);
   return true;
 }
 
-// ─── getAgentById ─────────────────────────────────────────────────────────────
-export function getAgentById(agentId) {
-  return _agentEntry(agentId);
+// ─── getAgentById / findAgent ─────────────────────────────────────────────────
+
+export async function getAgentById(agentId) {
+  const row = await _getAgentDef(agentId);
+  if (!row) return null;
+  const rt = await _getRuntime(agentId);
+  return _mergeAgent(row, rt);
+}
+
+export async function findAgent(agentId) {
+  return getAgentById(agentId);
+}
+
+function _mergeAgent(def, rt) {
+  return {
+    id: def.id,
+    name: def.name,
+    category: def.category,
+    skills: JSON.parse(def.skills || '[]'),
+    maxConcurrentConversations: def.max_concurrent_conversations ?? 3,
+    status: rt?.status ?? AGENT_STATES.AVAILABLE,
+    activeConversations: rt?.active_conversations ?? 0,
+    lastActiveAt: rt?.last_active_at ? Number(rt.last_active_at) : null,
+    chatCount: rt?.chat_count ? Number(rt.chat_count) : 0,
+    totalResponseMs: rt?.total_response_ms ? Number(rt.total_response_ms) : 0,
+    currentChatStart: rt?.current_chat_start ? Number(rt.current_chat_start) : null,
+  };
 }
 
 // ─── getAvailabilitySnapshot ─────────────────────────────────────────────────
-export function getAvailabilitySnapshot() {
-  const snapshot = {};
-  for (const [cat, agents] of Object.entries(agentRegistry)) {
-    snapshot[cat] = agents.map(({ id, name, status, chatCount, skills, maxConcurrentConversations, activeConversations, lastActiveAt }) => ({
-      id, name, status, chatCount, skills, maxConcurrentConversations, activeConversations, lastActiveAt,
-    }));
+
+export async function getAvailabilitySnapshot() {
+  const rows = await _allAgentsWithRuntime();
+  const snap = {};
+  for (const row of rows) {
+    const cat = row.category;
+    if (!snap[cat]) snap[cat] = [];
+    snap[cat].push({
+      id: row.id,
+      name: row.name,
+      status: row.status ?? AGENT_STATES.AVAILABLE,
+      chatCount: row.chat_count ? Number(row.chat_count) : 0,
+      skills: JSON.parse(row.skills || '[]'),
+      maxConcurrentConversations: row.max_concurrent_conversations ?? 3,
+      activeConversations: row.active_conversations ?? 0,
+      lastActiveAt: row.last_active_at ? Number(row.last_active_at) : null,
+    });
   }
-  return snapshot;
+  return snap;
 }
 
 // ─── getCategorySnapshot ─────────────────────────────────────────────────────
-export function getCategorySnapshot() {
+
+export async function getCategorySnapshot() {
+  const rows = await _allAgentsWithRuntime();
+  const stats = {};
+  for (const row of rows) {
+    const cat = row.category;
+    if (!stats[cat]) stats[cat] = { count: 0, available: 0 };
+    stats[cat].count++;
+    if ((row.status ?? AGENT_STATES.AVAILABLE) === AGENT_STATES.AVAILABLE || (row.active_conversations ?? 0) < (row.max_concurrent_conversations ?? 1)) {
+      stats[cat].available++;
+    }
+  }
   return Object.entries(categoryRegistry).map(([key, cat]) => ({
     ...cat,
-    agentCount:     agentRegistry[key]?.length || 0,
-    availableCount: agentRegistry[key]?.filter(
-      (a) => a.status === AGENT_STATES.AVAILABLE || a.activeConversations < a.maxConcurrentConversations
-    ).length || 0,
+    agentCount:     stats[key]?.count ?? 0,
+    availableCount: stats[key]?.available ?? 0,
   }));
 }
 
 // ─── createAgent — dynamic agent provisioning ─────────────────────────────────
-export function createAgent({ name, category, skills = ['general_support'], maxConcurrentConversations = 3 }) {
-  if (!agentRegistry[category]) agentRegistry[category] = [];
+
+export async function createAgent({ name, category, skills = ['general_support'], maxConcurrentConversations = 3, phone = '' }) {
+  if (!categoryRegistry[category]) categoryRegistry[category] = { id: category, name: category, description: '', skills: [] };
   const id = `${category}_dyn_${Date.now()}`;
-  const agent = {
-    id,
-    name,
-    status: AGENT_STATES.AVAILABLE,
-    skills,
-    maxConcurrentConversations,
-    activeConversations: 0,
-    lastActiveAt: null,
-    chatCount: 0,
-    totalResponseMs: 0,
-    currentChatStart: null,
-    cooldownTimer: null,
-  };
-  agentRegistry[category].push(agent);
+  const now = Date.now();
+  await db.execute({
+    sql: `INSERT INTO agents (id, name, category, skills, max_concurrent_conversations, phone, created_at)
+          VALUES (@id, @name, @category, @skills, @max, @phone, @created)`,
+    args: { id, name, category, skills: JSON.stringify(skills), max: maxConcurrentConversations, phone, created: now },
+  });
+  await db.execute({
+    sql: `INSERT INTO agent_runtime (agent_id, status, active_conversations, updated_at)
+          VALUES (@id, 'available', 0, @now)`,
+    args: { id, now },
+  });
   logEvent({ type: 'agent_created', agentId: id, category, meta: { name } });
-  return agent;
+  return _mergeAgent(
+    { id, name, category, skills: JSON.stringify(skills), max_concurrent_conversations: maxConcurrentConversations },
+    { status: AGENT_STATES.AVAILABLE, active_conversations: 0 }
+  );
 }
 
 // ─── removeAgent ─────────────────────────────────────────────────────────────
-export function removeAgent(agentId) {
-  for (const [cat, agents] of Object.entries(agentRegistry)) {
-    const idx = agents.findIndex(a => a.id === agentId);
-    if (idx >= 0) {
-      if (agents[idx].cooldownTimer) clearTimeout(agents[idx].cooldownTimer);
-      agentRegistry[cat].splice(idx, 1);
-      logEvent({ type: 'agent_removed', agentId });
-      return true;
-    }
+
+export async function removeAgent(agentId) {
+  await db.execute({ sql: 'DELETE FROM agent_metrics WHERE agent_id = ?', args: [agentId] });
+  await db.execute({ sql: 'DELETE FROM agent_runtime WHERE agent_id = ?', args: [agentId] });
+  const r = await db.execute({ sql: 'DELETE FROM agents WHERE id = ?', args: [agentId] });
+  if (r.rowsAffected > 0) {
+    logEvent({ type: 'agent_removed', agentId });
+    return true;
   }
   return false;
 }
 
-// ─── findAgent ───────────────────────────────────────────────────────────────
-export function findAgent(agentId) {
-  return _agentEntry(agentId);
-}
-
 // ─── getAgentMetrics ─────────────────────────────────────────────────────────
-export function getAgentMetrics() {
-  return _allAgents().map((a) => ({
+
+export async function getAgentMetrics() {
+  const rows = await _allAgentsWithRuntime();
+  return rows.map((a) => ({
     id:                       a.id,
     name:                     a.name,
-    category:                 _categoryOf(a.id),
-    status:                   a.status,
-    skills:                   a.skills,
-    maxConcurrentConversations: a.maxConcurrentConversations,
-    activeConversations:      a.activeConversations,
-    currentLoad:              `${a.activeConversations}/${a.maxConcurrentConversations}`,
-    loadPct:                  Math.round((a.activeConversations / a.maxConcurrentConversations) * 100),
-    chatCount:                a.chatCount,
-    lastActiveAt:             a.lastActiveAt,
-    avgResponseMs:            a.chatCount > 0 ? Math.round(a.totalResponseMs / a.chatCount) : null,
+    category:                 a.category,
+    status:                   a.status ?? AGENT_STATES.AVAILABLE,
+    skills:                   JSON.parse(a.skills || '[]'),
+    maxConcurrentConversations: a.max_concurrent_conversations ?? 3,
+    activeConversations:      a.active_conversations ?? 0,
+    currentLoad:              `${a.active_conversations ?? 0}/${a.max_concurrent_conversations ?? 1}`,
+    loadPct:                  Math.round(((a.active_conversations ?? 0) / (a.max_concurrent_conversations ?? 1)) * 100),
+    chatCount:                a.chat_count ? Number(a.chat_count) : 0,
+    lastActiveAt:             a.last_active_at ? Number(a.last_active_at) : null,
+    avgResponseMs:            (a.chat_count ? Number(a.chat_count) : 0) > 0
+      ? Math.round((a.total_response_ms ? Number(a.total_response_ms) : 0) / (a.chat_count ? Number(a.chat_count) : 1))
+      : null,
   }));
 }

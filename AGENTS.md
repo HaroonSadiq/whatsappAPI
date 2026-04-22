@@ -21,12 +21,13 @@ It also serves a pure-HTML admin dashboard (`public/index.html`) for live operat
 
 - **Runtime:** Node.js `>=18.0.0` (ES modules — `"type": "module"`)
 - **Framework:** Express `^4.18.2`
+- **Database:** LibSQL (Turso) — async SQLite, Vercel-compatible
 - **AI Classifiers:**
   - Default: Google Gemini (`@google/generative-ai`) — `src/classifier.js`
   - Optional: Moonshot Kimi (`classifier-kimi.js`, OpenAI-compatible API)
-- **Messaging:** WhatsApp Cloud API (Meta Graph API v19.0 / v25.0) via native `fetch`
+- **Messaging:** WhatsApp Cloud API (Meta Graph API v21.0) via native `fetch`
 - **Frontend:** Static HTML/CSS/JS (no build step)
-- **State:** In-memory only (sessions, queue, logs, ratings). There is no database or Redis in the current codebase.
+- **State:** Persisted in Turso DB. In-memory state is limited to ephemeral caches only.
 
 ---
 
@@ -39,20 +40,29 @@ src/
   orchestrator.js    ← Full routing pipeline: classify → select agent → assign / queue / dequeue
   classifier.js      ← Gemini-powered FAQ/escalation classifier with PRODUCT_KB
   classifier-kimi.js ← Optional Kimi k2 classifier (drop-in replacement)
-  agents.js          ← Agent registry, load balancing, cooldown logic, metrics
-  session.js         ← In-memory session store (history, state, assignments, queue, ratings, timers)
+  knowledge-base.js  ← Shared PRODUCT_KB used by all classifiers
+  agents.js          ← DB-backed agent registry, load balancing, cooldown logic, metrics
+  session.js         ← DB-backed session store (history, state, queue, ratings, follow-ups)
+  supportSessions.js ← DB-backed escalation lifecycle (waiting → active → closed)
   queue.js           ← Per-customer async serial queue to prevent race conditions
   integrations.js    ← Outbound integrations: Slack, Google Sheets, generic webhook, email
   logger.js          ← Structured in-memory event logger (last 500 events)
+  events.js          ← EventEmitter bridge between orchestrator and WebSocket handler
+  ws/handler.js      ← Socket.IO real-time agent dashboard bridge
+  auth/              ← JWT auth, bcrypt passwords, role-based access (admin/agent)
+  test_mode/         ← Complete sandbox for local testing (in-memory, bypasses AI)
+  db.js              ← LibSQL (Turso) client and schema initialization
 
 public/
   index.html         ← Production admin dashboard (dark-themed, auto-refreshes)
+  agent/dashboard.html ← Agent workspace (Socket.IO + polling fallback)
+  login.html         ← Unified login portal
+  support.html       ← Customer web chat (test mode)
 
 workflows/
   whatsapp_router.md ← Setup and message-flow SOP
 
 .env                 ← API keys and secrets (gitignored, never commit)
-.tmp/                ← Temporary working files (disposable)
 ```
 
 ---
@@ -94,7 +104,7 @@ The server listens on `process.env.PORT` or defaults to `3001`.
 |-------|---------|
 | `available` | Ready and has free capacity. |
 | `busy` | At maximum concurrent conversations. |
-| `cooldown` | Post-chat break (auto-resets to `available` after 2 min). |
+| `cooldown` | Post-chat break (auto-resets after 2 min, checked on DB query). |
 | `offline` | Manually taken offline. |
 | `failed` | Repeated WhatsApp send failures; requires manual reset. |
 
@@ -104,9 +114,9 @@ The server listens on `process.env.PORT` or defaults to `3001`.
 2. **State machine** in `server.js` routes the message based on conversation state.
 3. **Classification** (`orchestrator.js` → `classifier.js`) decides `faq_answer` vs `escalate`.
 4. **FAQ path:** Bot replies, then offers interactive buttons (More Questions / Talk to Specialist / Book Demo).
-5. **Escalation path:** `orchestrator.js` classifies the category (clothing / tech / general), finds the least-loaded available agent in that category pool, and pushes a new support session to the agent's web dashboard via Socket.IO. The customer receives a "connecting you with…" message. No WhatsApp alerts are sent to agents — all agent communication goes through the web dashboard. If no agent is available, the customer is queued with a priority boost for frustrated sentiment.
+5. **Escalation path:** `orchestrator.js` classifies the category (clothing / tech / general), finds the least-loaded available agent in that category pool via DB query, and pushes a new support session to the agent's web dashboard. The customer receives a "connecting you with…" message. If no agent is available, the customer is queued with a priority boost for frustrated sentiment.
 6. **Auto-dequeue:** When an agent becomes available or a chat is marked done, the next matching queued customer is assigned automatically.
-7. **Follow-up timers:** If a customer is `active` but silent for 5 min, they get a nudge; after another 5 min, the chat auto-closes.
+7. **Follow-up timers:** If a customer is `active` but silent for 5 min, they get a nudge; after another 5 min, the chat auto-closes. These are DB-driven (`follow_up_schedule` table) to survive Vercel cold starts.
 
 ---
 
@@ -119,6 +129,10 @@ The dashboard (`public/index.html`) consumes these endpoints:
 - `GET  /api/logs` — Structured event log
 - `GET  /api/logs/:phone` — Per-customer conversation log
 - `GET  /api/metrics` — Agent performance metrics
+- `GET  /api/sessions` — All support sessions
+- `GET  /api/sessions/mine` — Current agent's non-closed sessions
+- `GET  /api/sessions/:id/history` — Session message history
+- `POST /api/auth/login` — JWT login
 - `POST /api/set-agent-status` — Change agent status manually
 - `POST /api/assign` — Manually assign a queued customer
 - `POST /api/send` — Send a manual message from the dashboard
@@ -141,11 +155,15 @@ The following are read from `.env` at runtime:
 | `WHATSAPP_TOKEN` | Meta/WhatsApp access token |
 | `GEMINI_API_KEY` | Google Generative AI API key |
 | `KIMI_API_KEY` | Moonshot AI API key (only if using `classifier-kimi.js`) |
-| `ADMIN_WHATSAPP_NUMBER` | The single WhatsApp number all customers message (e.g. 923234758743) |
+| `ADMIN_WHATSAPP_NUMBER` | The single WhatsApp number all customers message |
 | `SLACK_WEBHOOK_URL` | Slack incoming webhook for escalation alerts |
 | `GOOGLE_SHEETS_URL` | Google Apps Script web app for logging rows |
 | `OUTBOUND_WEBHOOK_URL` | Generic CRM webhook URL |
 | `EMAIL_WEBHOOK_URL` | Email relay webhook (e.g. Make/Zapier) |
+| `TURSO_DATABASE_URL` | Turso DB URL (e.g. `libsql://your-db.turso.io`) |
+| `TURSO_AUTH_TOKEN` | Turso auth token |
+| `JWT_SECRET` | Secret for signing JWTs (required, no fallback) |
+| `CLIENT_ORIGIN` | Allowed CORS origin for Socket.IO (default `*`) |
 
 **Security rule:** Secrets live **only** in `.env`. They are not hard-coded anywhere in source control.
 
@@ -158,7 +176,7 @@ The following are read from `.env` at runtime:
 - Keep business logic out of `server.js`; route to `orchestrator.js`, `agents.js`, or `session.js`.
 - WhatsApp API calls must go through `whatsapp.js` (`sendMessage`, `sendButtonMessage`).
 - Any async operation that touches external APIs should be wrapped with retry or graceful fallback.
-- In-memory data structures are acceptable for the current scope; do not introduce a database unless explicitly requested.
+- All agent state is DB-backed (`agents` + `agent_runtime` tables) for Vercel compatibility.
 
 ---
 
@@ -178,12 +196,10 @@ There are **no automated tests** in this codebase (no test runner, no test scrip
 
 ## Deployment Notes
 
-- The project is currently designed to run as a single Node.js process.
-- For production, the workflow checklist mentions (but does not implement):
-  - Replacing in-memory sessions with Redis
-  - Persisting the queue in PostgreSQL / MongoDB
-  - Using a permanent server instead of ngrok
-  - Switching the Meta app to Live mode
+- The project is designed to run on **Vercel serverless** via `api/index.js`.
+- All runtime state is persisted to **Turso (LibSQL)**. No in-memory state survives cold starts.
+- Agent dashboard supports both **Socket.IO** (local dev) and **REST polling** (Vercel production) as fallback.
+- Follow-up timers are DB-driven (`follow_up_schedule` table), not in-memory `setTimeout`.
 - There is no CI/CD pipeline, Docker, or container configuration present.
 
 ---
@@ -192,28 +208,21 @@ There are **no automated tests** in this codebase (no test runner, no test scrip
 
 ### Switching AI backend (Gemini ↔ Kimi)
 
-In `src/server.js`, change this import:
-
-```js
-// Default (Gemini)
-import { classifyAndRespond } from "./classifier.js";
-
-// Optional (Kimi)
-import { classifyAndRespond } from "./classifier-kimi.js";
+Set the environment variable:
+```bash
+AI_CLASSIFIER=kimi   # uses classifier-kimi.js
+# unset or any other value uses classifier.js (Gemini)
 ```
 
 Then restart the server.
 
 ### Updating the knowledge base
 
-Edit `PRODUCT_KB` in `src/classifier.js` (and `src/classifier-kimi.js` if you use it). This string is injected into the system prompt, so any factual change to prices, policies, or products must be updated there.
+Edit `src/knowledge-base.js`. This string is injected into the system prompt for both classifiers, so any factual change to prices, policies, or products must be updated there **only**.
 
 ### Adding or modifying agents
 
-Edit `src/agents.js`:
-- Update `agentRegistry` to add/remove agents or change capacities.
-- Update `categoryRegistry` if you need new routing categories.
-- The routing logic (`findAvailableAgent`) automatically picks up new categories without any other code change.
+Edit the `SEED_AGENTS` array in `src/agents.js` to change the default agents. For dynamic agent creation, use the admin dashboard "Manage Users" tab or the `/api/auth/users` endpoint.
 
 ### Recovering from a failed agent
 

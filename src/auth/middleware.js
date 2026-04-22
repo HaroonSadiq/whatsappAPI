@@ -1,7 +1,11 @@
 import jwt from 'jsonwebtoken';
 import { findById } from './users.js';
 
-export const JWT_SECRET = process.env.JWT_SECRET || 'wa_router_dev_secret_change_in_prod';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('[Auth] FATAL: JWT_SECRET environment variable is required');
+  process.exit(1);
+}
 
 export function generateToken(user) {
   return jwt.sign(
@@ -23,7 +27,6 @@ export async function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  // Step 1 — verify JWT signature/expiry (auth failure → 401)
   let payload;
   try {
     payload = verifyToken(auth.slice(7));
@@ -31,7 +34,6 @@ export async function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Invalid token' });
   }
 
-  // Step 2 — load user from DB (server failure → 500, not 401)
   try {
     const user = await findById(payload.userId);
     if (!user?.enabled) return res.status(401).json({ error: 'Unauthorized' });
