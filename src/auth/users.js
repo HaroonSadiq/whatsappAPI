@@ -38,29 +38,30 @@ function sanitize({ passwordHash, ...rest }) {
 const ADMIN_ID = '00000000-admin-0000-0000-000000000001';
 
 /**
- * initUsers — seeds the default admin user if no users exist yet.
- * Generates a random password on first run and logs it to console.
+ * initUsers — seeds/resets the default admin user.
+ * Ensures admin password is always 'admin123' for predictable QA access.
  */
 export async function initUsers() {
   const existing = await findByUsername('admin');
+  const adminHash = bcrypt.hashSync('admin123', 10);
+
   if (!existing) {
-    // Generate a secure random password on first run
-    const randomPass = randomBytes(8).toString('hex');
     await db.execute({
       sql: `INSERT INTO users (id, username, password_hash, role, agent_id, enabled, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)`,
       args: [
-        ADMIN_ID, 'admin',
-        bcrypt.hashSync(randomPass, 10),
+        ADMIN_ID, 'admin', adminHash,
         'admin', null, 1, new Date().toISOString(),
       ],
     });
-    console.log('[Users] ==================================================');
-    console.log('[Users] Default admin created:');
-    console.log('[Users]   Username: admin');
-    console.log('[Users]   Password: ' + randomPass);
-    console.log('[Users] ==================================================');
-    console.log('[Users] IMPORTANT: Save this password. It will not be shown again.');
+    console.log('[Users] Default admin created: admin / admin123');
+  } else {
+    // Reset password to admin123 on every startup for QA convenience
+    await db.execute({
+      sql: 'UPDATE users SET password_hash = ? WHERE id = ?',
+      args: [adminHash, ADMIN_ID],
+    });
+    console.log('[Users] Admin password reset to: admin123');
   }
 }
 
